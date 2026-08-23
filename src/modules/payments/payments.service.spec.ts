@@ -3,7 +3,7 @@ import { PaymentMethod, PaymentTransactionStatus } from '../../database/entities
 import { PaymentStatus } from '../../database/entities/order.entity';
 
 describe('PaymentsService — TSE hook in create()', () => {
-  let paymentRepository: { create: jest.Mock; save: jest.Mock };
+  let paymentRepository: { create: jest.Mock; save: jest.Mock; findOne: jest.Mock };
   let orderRepository: { findOne: jest.Mock; save: jest.Mock };
   let orderItemRepository: { save: jest.Mock };
   let orderItemPaymentRepository: {};
@@ -32,6 +32,12 @@ describe('PaymentsService — TSE hook in create()', () => {
     paymentRepository = {
       create: jest.fn((dto) => ({ ...dto, id: 'payment-1' })),
       save: jest.fn(async (p) => p),
+      // create() ends by calling this.findOne(...) to return the fresh row —
+      // stub it so the happy path resolves; overridden by individual tests as needed.
+      findOne: jest.fn().mockImplementation(async () => ({
+        id: 'payment-1',
+        order: { organizationId: ORG_ID },
+      })),
     };
     orderRepository = { findOne: jest.fn(), save: jest.fn(async (o) => o) };
     orderItemRepository = { save: jest.fn() };
@@ -49,13 +55,6 @@ describe('PaymentsService — TSE hook in create()', () => {
       orderPrintService as any,
       tseService as any,
     );
-
-    // create() ends by calling this.findOne(...) to return the fresh row —
-    // stub the repository call it makes so the happy path resolves.
-    paymentRepository.findOne = jest.fn().mockImplementation(async () => ({
-      id: 'payment-1',
-      order: { organizationId: ORG_ID },
-    }));
   });
 
   it('signs the payment through TSE, persists tseData, and includes it in the print payload', async () => {
