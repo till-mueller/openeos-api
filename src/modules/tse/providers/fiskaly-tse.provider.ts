@@ -1,6 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { TseFiskalyConfig, TseProvider, TseTransactionInput, TseTransactionResult } from '../tse.interface';
+import {
+  TseFiskalyConfig,
+  TseProvider,
+  TseTransactionInput,
+  TseTransactionResult,
+  TseExportInput,
+  TseExportResult,
+} from '../tse.interface';
 
 const API_BASE = 'https://kassensichv.io/api/v2';
 
@@ -38,7 +45,7 @@ interface FiskalyTss {
  * "Kassenbeleg-V1" only.
  */
 @Injectable()
-export class FiskalyTseProvider implements TseProvider {
+export class FiskalyTseProvider implements TseProvider<TseFiskalyConfig> {
   readonly name = 'fiskaly' as const;
   private readonly logger = new Logger(FiskalyTseProvider.name);
   private tokenCache = new Map<string, { token: string; expiresAt: number }>();
@@ -163,6 +170,61 @@ export class FiskalyTseProvider implements TseProvider {
       this.logger.warn(`fiskaly test-connection failed: ${(error as Error).message}`);
       return { ok: false, message: (error as Error).message };
     }
+  }
+
+  /**
+   * TR-03153 TAR export for one client's transactions in a date range — the
+   * handover artifact for the rental-tenant separation model. fiskaly exports
+   * are async: create an export job, poll until DONE, download the archive.
+   * Like the rest of this provider, verify the exact job schema against a
+   * provisioned TSS — this follows fiskaly's documented export flow but is
+   * untested against live credentials.
+   */
+  async exportData(config: TseFiskalyConfig, input: TseExportInput): Promise<TseExportResult> {
+    const created = await this.request<{ _id: string; state: string }>(
+      config,
+      'POST',
+      `/tss/${config.tssId}/exports`,
+      {
+        client_id: input.clientId,
+        // fiskaly export job time filters
+        time_start: input.periodStart.toISOString(),
+        time_end: input.periodEnd.toISOString(),
+      },
+    );
+
+    const exportId = created._id;
+    const deadline = Date.now() + 2 * 60 * 1000; // exports can take a while on large ranges
+    let state = created.state;
+    while (state !== 'DONE' && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      const status = await this.request<{ state: string }>(
+        config,
+        'GET',
+        `/tss/${config.tssId}/exports/${exportId}`,
+      );
+      state = status.state;
+      if (state === 'FAILED') {
+        throw new Error(`fiskaly export ${exportId} failed`);
+      }
+    }
+    if (state !== 'DONE') {
+      throw new Error(`fiskaly export ${exportId} timed out (state: ${state})`);
+    }
+
+    const token = await this.getAccessToken(config);
+    const res = await fetch(`${API_BASE}/tss/${config.tssId}/exports/${exportId}/download`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      throw new Error(`fiskaly export download failed: ${res.status} ${await res.text()}`);
+    }
+    const data = Buffer.from(await res.arrayBuffer());
+
+    return {
+      data,
+      filename: `tse-export-${input.clientId}-${input.periodStart.toISOString().slice(0, 10)}.tar`,
+    };
   }
 }
 

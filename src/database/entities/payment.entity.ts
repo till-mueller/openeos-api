@@ -44,7 +44,7 @@ export interface PaymentMetadata {
  * Ausfall-Regelung — the sale still completes, but the gap must be provable).
  */
 export interface TseTransactionData {
-  provider: 'fiskaly' | 'none';
+  provider: 'fiskaly' | 'local' | 'none';
   clientId: string;
   transactionNumber: number;
   serialNumber: string;

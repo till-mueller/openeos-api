@@ -447,6 +447,35 @@ export class AppGateway
     });
   }
 
+  /**
+   * Emit to a device room and wait for its ack *payload* (not just a boolean)
+   * — used for request/response jobs like TSE signing, where the agent's
+   * socket.io ack callback return value IS the response. Resolves null when
+   * no socket acked within the timeout (device offline/unresponsive) or the
+   * room had no sockets at all; never rejects.
+   */
+  emitToDeviceAndAwaitResponse<T>(
+    organizationId: string,
+    deviceId: string,
+    event: string,
+    data: unknown,
+    timeoutMs = 15000,
+  ): Promise<T | null> {
+    const roomName = `org:${organizationId}:device:${deviceId}`;
+    return new Promise((resolve) => {
+      this.server
+        .to(roomName)
+        .timeout(timeoutMs)
+        .emit(event, data, (err: Error | null, responses: T[]) => {
+          if (err || !Array.isArray(responses) || responses.length === 0) {
+            resolve(null);
+            return;
+          }
+          resolve(responses[0]);
+        });
+    });
+  }
+
   // Presence is derived from connected sockets via fetchSockets(), which the
   // Redis adapter resolves across all replicas — no in-process state.
 
