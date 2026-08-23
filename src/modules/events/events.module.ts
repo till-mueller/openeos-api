@@ -10,6 +10,7 @@ import { GatewayModule } from '../gateway/gateway.module';
 import { SumUpModule } from '../sumup/sumup.module';
 import { PrintJobsModule } from '../print-jobs/print-jobs.module';
 import { OrganizationsModule } from '../organizations/organizations.module';
+import { TseModule } from '../tse/tse.module';
 import {
   Event,
   Organization,
@@ -39,6 +40,7 @@ import {
     SumUpModule,
     PrintJobsModule,
     OrganizationsModule,
+    TseModule,
   ],
   controllers: [
     EventsController,

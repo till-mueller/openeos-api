@@ -476,6 +476,30 @@ export class GatewayService {
     );
   }
 
+  // TSE Agent Jobs (request/response over the device's socket ack)
+
+  /**
+   * Send a job to a device's TSE agent and wait for its ack response.
+   * Resolves null when the agent is offline or didn't respond in time —
+   * callers treat that as a TSE outage (see TseService.recordTransaction).
+   */
+  sendTseJobToAgent<T>(
+    organizationId: string,
+    agentDeviceId: string,
+    event: string,
+    data: unknown,
+    timeoutMs?: number,
+  ): Promise<T | null> {
+    this.logger.debug(`Sending ${event} to TSE agent device ${agentDeviceId}`);
+    return this.appGateway.emitToDeviceAndAwaitResponse<T>(
+      organizationId,
+      agentDeviceId,
+      event,
+      data,
+      timeoutMs,
+    );
+  }
+
   // Device Online Status (async — resolved across all replicas via the
   // socket.io Redis adapter)
 
