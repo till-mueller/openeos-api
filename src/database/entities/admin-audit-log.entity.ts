@@ -19,6 +19,7 @@ export enum AdminAction {
   CREATE_RENTAL_HARDWARE = 'create_rental_hardware',
   ASSIGN_RENTAL = 'assign_rental',
   RETURN_RENTAL = 'return_rental',
+  IMPORT_CUSTOMER = 'import_customer',
 }
 
 export interface AuditLogDetails {
@@ -59,7 +60,9 @@ export class AdminAuditLog extends BaseEntity {
   userAgent: string | null;
 
   // Relations
-  @ManyToOne(() => User, (user) => user.adminAuditLogs, { onDelete: 'SET NULL' })
+  @ManyToOne(() => User, (user) => user.adminAuditLogs, {
+    onDelete: 'SET NULL',
+  })
   @JoinColumn({ name: 'admin_user_id' })
   adminUser: User;
 
