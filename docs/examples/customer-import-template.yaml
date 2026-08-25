@@ -1,0 +1,43 @@
+# Template for POST /admin/organizations/import (super-admin only).
+#
+# One file = one customer/organization. Upload one or more YAML files via
+# the "Kunden importieren" / "Import customers" button on the admin
+# Organisationen page, or POST them directly as multipart `files` fields.
+#
+# The filename itself is the upsert key: re-uploading a file with the same
+# name updates the organization it previously created instead of creating
+# a duplicate. Rename the file if you want a genuinely new organization.
+#
+# Required fields: name, admin.email, admin.password, admin.firstName,
+# admin.lastName. Everything else is optional.
+
+name: "Acme GmbH"
+
+# Optional. Auto-generated from `name` if omitted. Lowercase letters,
+# digits, and hyphens only.
+slug: "acme-gmbh"
+
+# Admin user created for this organization on first import. Ignored on
+# later re-imports of the same file (the org is updated, the admin
+# account is not touched) — rotate the password via the normal
+# forgot-password flow instead of editing it here.
+admin:
+  email: "admin@acme.example"
+  password: "TemporaryPass123!"
+  firstName: "Max"
+  lastName: "Mustermann"
+
+# Optional. Merged into Organization.settings on import/update.
+settings:
+  currency: "EUR"
+  timezone: "Europe/Berlin"
+  locale: "de"
+
+# Optional billing details.
+billingEmail: "billing@acme.example"
+billingAddress:
+  company: "Acme GmbH"
+  street: "Musterstraße 1"
+  city: "Berlin"
+  zip: "10115"
+  country: "DE"

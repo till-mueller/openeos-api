@@ -2,16 +2,28 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Logger,
   Inject,
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In, MoreThanOrEqual } from 'typeorm';
+import {
+  Repository,
+  DataSource,
+  EntityManager,
+  In,
+  MoreThanOrEqual,
+} from 'typeorm';
+import * as bcrypt from 'bcrypt';
+import * as yaml from 'js-yaml';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
 import {
   Organization,
   User,
+  UserOrganization,
   SubscriptionConfig,
   Invoice,
   RentalHardware,
@@ -22,10 +34,17 @@ import {
   Printer,
   Device,
 } from '../../database/entities';
+import { OrganizationRole } from '../../database/entities/user-organization.entity';
 import { AdminAction } from '../../database/entities/admin-audit-log.entity';
 import { InvoiceStatus } from '../../database/entities/invoice.entity';
-import { RentalHardwareStatus, RentalHardwareType } from '../../database/entities/rental-hardware.entity';
-import { DeviceType, DeviceStatus } from '../../database/entities/device.entity';
+import {
+  RentalHardwareStatus,
+  RentalHardwareType,
+} from '../../database/entities/rental-hardware.entity';
+import {
+  DeviceType,
+  DeviceStatus,
+} from '../../database/entities/device.entity';
 import { RentalAssignmentStatus } from '../../database/entities/rental-assignment.entity';
 import {
   PrinterType,
@@ -72,7 +91,11 @@ import {
   UpdateOrganizationAdminDto,
   CreateSubscriptionConfigDto,
   UpdateSubscriptionConfigDto,
+  ImportCustomerYamlDto,
+  ImportCustomerResult,
 } from './dto';
+
+const BCRYPT_ROUNDS = 12;
 
 @Injectable()
 export class AdminService {
@@ -83,6 +106,9 @@ export class AdminService {
     private readonly organizationRepository: Repository<Organization>,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    @InjectRepository(UserOrganization)
+    private readonly userOrganizationRepository: Repository<UserOrganization>,
+    private readonly dataSource: DataSource,
     @InjectRepository(SubscriptionConfig)
     private readonly subscriptionConfigRepository: Repository<SubscriptionConfig>,
     @InjectRepository(Invoice)
@@ -107,18 +133,20 @@ export class AdminService {
 
   // === Organizations ===
 
-  async findAllOrganizations(
-    queryDto: QueryOrganizationsDto,
-  ): Promise<{ data: Organization[]; total: number; page: number; limit: number }> {
+  async findAllOrganizations(queryDto: QueryOrganizationsDto): Promise<{
+    data: Organization[];
+    total: number;
+    page: number;
+    limit: number;
+  }> {
     const { search, page = 1, limit = 20 } = queryDto;
 
     const queryBuilder = this.organizationRepository.createQueryBuilder('org');
 
     if (search) {
-      queryBuilder.where(
-        '(org.name ILIKE :search OR org.slug ILIKE :search)',
-        { search: `%${search}%` },
-      );
+      queryBuilder.where('(org.name ILIKE :search OR org.slug ILIKE :search)', {
+        search: `%${search}%`,
+      });
     }
 
     const total = await queryBuilder.getCount();
@@ -182,10 +210,15 @@ export class AdminService {
     userAgent?: string,
   ): Promise<Organization> {
     const org = await this.getOrganization(orgId);
-    const before = { discountPercent: org.discountPercent, discountValidUntil: org.discountValidUntil };
+    const before = {
+      discountPercent: org.discountPercent,
+      discountValidUntil: org.discountValidUntil,
+    };
 
     org.discountPercent = discountDto.discountPercent;
-    org.discountValidUntil = discountDto.validUntil ? new Date(discountDto.validUntil) : null;
+    org.discountValidUntil = discountDto.validUntil
+      ? new Date(discountDto.validUntil)
+      : null;
     await this.organizationRepository.save(org);
 
     await this.createAuditLog(
@@ -194,7 +227,14 @@ export class AdminService {
       AdminAction.SET_DISCOUNT,
       'organization',
       orgId,
-      { before, after: { discountPercent: org.discountPercent, discountValidUntil: org.discountValidUntil }, reason: discountDto.reason },
+      {
+        before,
+        after: {
+          discountPercent: org.discountPercent,
+          discountValidUntil: org.discountValidUntil,
+        },
+        reason: discountDto.reason,
+      },
       ipAddress,
       userAgent,
     );
@@ -209,7 +249,10 @@ export class AdminService {
     userAgent?: string,
   ): Promise<Organization> {
     const org = await this.getOrganization(orgId);
-    const before = { discountPercent: org.discountPercent, discountValidUntil: org.discountValidUntil };
+    const before = {
+      discountPercent: org.discountPercent,
+      discountValidUntil: org.discountValidUntil,
+    };
 
     org.discountPercent = 0;
     org.discountValidUntil = null;
@@ -290,7 +333,8 @@ export class AdminService {
   ): Promise<{ data: User[]; total: number; page: number; limit: number }> {
     const { search, isLocked, page = 1, limit = 20 } = queryDto;
 
-    const queryBuilder = this.userRepository.createQueryBuilder('user')
+    const queryBuilder = this.userRepository
+      .createQueryBuilder('user')
       .leftJoinAndSelect('user.userOrganizations', 'uo')
       .leftJoinAndSelect('uo.organization', 'org');
 
@@ -328,7 +372,10 @@ export class AdminService {
     });
 
     if (!user) {
-      throw new NotFoundException({ code: 'NOT_FOUND', message: 'Benutzer nicht gefunden' });
+      throw new NotFoundException({
+        code: 'NOT_FOUND',
+        message: 'Benutzer nicht gefunden',
+      });
     }
 
     delete (user as Partial<User>).passwordHash;
@@ -377,14 +424,23 @@ export class AdminService {
   async findAllInvoices(
     queryDto: QueryInvoicesAdminDto,
   ): Promise<{ data: Invoice[]; total: number; page: number; limit: number }> {
-    const { organizationId, status, startDate, endDate, page = 1, limit = 20 } = queryDto;
+    const {
+      organizationId,
+      status,
+      startDate,
+      endDate,
+      page = 1,
+      limit = 20,
+    } = queryDto;
 
     const queryBuilder = this.invoiceRepository
       .createQueryBuilder('invoice')
       .leftJoinAndSelect('invoice.organization', 'org');
 
     if (organizationId) {
-      queryBuilder.andWhere('invoice.organizationId = :organizationId', { organizationId });
+      queryBuilder.andWhere('invoice.organizationId = :organizationId', {
+        organizationId,
+      });
     }
 
     if (status) {
@@ -392,10 +448,13 @@ export class AdminService {
     }
 
     if (startDate && endDate) {
-      queryBuilder.andWhere('invoice.createdAt BETWEEN :startDate AND :endDate', {
-        startDate: new Date(startDate),
-        endDate: new Date(endDate),
-      });
+      queryBuilder.andWhere(
+        'invoice.createdAt BETWEEN :startDate AND :endDate',
+        {
+          startDate: new Date(startDate),
+          endDate: new Date(endDate),
+        },
+      );
     }
 
     const total = await queryBuilder.getCount();
@@ -449,9 +508,14 @@ export class AdminService {
   // === Devices (Admin) ===
 
   async deleteDevice(deviceId: string): Promise<void> {
-    const device = await this.deviceRepository.findOne({ where: { id: deviceId } });
+    const device = await this.deviceRepository.findOne({
+      where: { id: deviceId },
+    });
     if (!device) {
-      throw new NotFoundException({ code: ErrorCodes.NOT_FOUND, message: 'Gerät nicht gefunden' });
+      throw new NotFoundException({
+        code: ErrorCodes.NOT_FOUND,
+        message: 'Gerät nicht gefunden',
+      });
     }
     // Drop linked printer rows along with the device — they're useless without
     // an agent and would otherwise show up as orphans in the admin UI.
@@ -460,7 +524,10 @@ export class AdminService {
     this.logger.log(`Admin deleted device ${deviceId}`);
   }
 
-  async findAllDevices(params?: { type?: string; unassigned?: boolean }): Promise<Device[]> {
+  async findAllDevices(params?: {
+    type?: string;
+    unassigned?: boolean;
+  }): Promise<Device[]> {
     const qb = this.deviceRepository.createQueryBuilder('device');
 
     if (params?.type) {
@@ -478,9 +545,12 @@ export class AdminService {
 
   // === Rental Hardware ===
 
-  async findAllRentalHardware(
-    queryDto: QueryRentalHardwareDto,
-  ): Promise<{ data: RentalHardware[]; total: number; page: number; limit: number }> {
+  async findAllRentalHardware(queryDto: QueryRentalHardwareDto): Promise<{
+    data: RentalHardware[];
+    total: number;
+    page: number;
+    limit: number;
+  }> {
     const { type, status, search, page = 1, limit = 20 } = queryDto;
 
     const queryBuilder = this.rentalHardwareRepository.createQueryBuilder('hw');
@@ -536,7 +606,9 @@ export class AdminService {
       userAgent,
     );
 
-    this.logger.log(`Rental hardware created: ${hardware.name} (${hardware.serialNumber})`);
+    this.logger.log(
+      `Rental hardware created: ${hardware.name} (${hardware.serialNumber})`,
+    );
 
     return hardware;
   }
@@ -589,7 +661,8 @@ export class AdminService {
     if (activeAssignment) {
       throw new BadRequestException({
         code: ErrorCodes.VALIDATION_ERROR,
-        message: 'Hardware hat aktive Zuweisungen und kann nicht gelöscht werden',
+        message:
+          'Hardware hat aktive Zuweisungen und kann nicht gelöscht werden',
       });
     }
 
@@ -600,8 +673,21 @@ export class AdminService {
 
   async findAllRentalAssignments(
     queryDto: QueryRentalAssignmentsAdminDto,
-  ): Promise<{ data: RentalAssignment[]; total: number; page: number; limit: number }> {
-    const { organizationId, hardwareId, status, startDate, endDate, page = 1, limit = 20 } = queryDto;
+  ): Promise<{
+    data: RentalAssignment[];
+    total: number;
+    page: number;
+    limit: number;
+  }> {
+    const {
+      organizationId,
+      hardwareId,
+      status,
+      startDate,
+      endDate,
+      page = 1,
+      limit = 20,
+    } = queryDto;
 
     const queryBuilder = this.rentalAssignmentRepository
       .createQueryBuilder('assignment')
@@ -610,11 +696,15 @@ export class AdminService {
       .leftJoinAndSelect('assignment.event', 'event');
 
     if (organizationId) {
-      queryBuilder.andWhere('assignment.organizationId = :organizationId', { organizationId });
+      queryBuilder.andWhere('assignment.organizationId = :organizationId', {
+        organizationId,
+      });
     }
 
     if (hardwareId) {
-      queryBuilder.andWhere('assignment.rentalHardwareId = :hardwareId', { hardwareId });
+      queryBuilder.andWhere('assignment.rentalHardwareId = :hardwareId', {
+        hardwareId,
+      });
     }
 
     if (status) {
@@ -622,10 +712,13 @@ export class AdminService {
     }
 
     if (startDate && endDate) {
-      queryBuilder.andWhere('assignment.startDate BETWEEN :startDate AND :endDate', {
-        startDate: new Date(startDate),
-        endDate: new Date(endDate),
-      });
+      queryBuilder.andWhere(
+        'assignment.startDate BETWEEN :startDate AND :endDate',
+        {
+          startDate: new Date(startDate),
+          endDate: new Date(endDate),
+        },
+      );
     }
 
     const total = await queryBuilder.getCount();
@@ -665,7 +758,10 @@ export class AdminService {
 
     const startDate = new Date(createDto.startDate);
     const endDate = new Date(createDto.endDate);
-    const totalDays = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+    const totalDays =
+      Math.ceil(
+        (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24),
+      ) + 1;
     const totalAmount = totalDays * Number(hardware.dailyRate);
 
     const assignment = this.rentalAssignmentRepository.create({
@@ -748,7 +844,9 @@ export class AdminService {
           organizationId: assignment.organizationId,
           name: hardware.name,
           type: (config.printerType as PrinterType) || PrinterType.RECEIPT,
-          connectionType: (config.connectionType as PrinterConnectionType) || PrinterConnectionType.USB,
+          connectionType:
+            (config.connectionType as PrinterConnectionType) ||
+            PrinterConnectionType.USB,
           connectionConfig: {
             ipAddress: config.ipAddress,
             port: config.port,
@@ -763,13 +861,20 @@ export class AdminService {
         });
 
         await this.printerRepository.save(printer);
-        this.logger.log(`Auto-created printer ${printer.name} (${printer.id}) for rental activation`);
+        this.logger.log(
+          `Auto-created printer ${printer.name} (${printer.id}) for rental activation`,
+        );
 
         // Push config update to device via WebSocket
         try {
-          this.gatewayService.notifyPrinterConfigUpdate(assignment.organizationId, hardware.deviceId);
+          this.gatewayService.notifyPrinterConfigUpdate(
+            assignment.organizationId,
+            hardware.deviceId,
+          );
         } catch (error) {
-          this.logger.warn(`Failed to push config update to device ${hardware.deviceId}: ${error}`);
+          this.logger.warn(
+            `Failed to push config update to device ${hardware.deviceId}: ${error}`,
+          );
         }
       }
     }
@@ -819,15 +924,22 @@ export class AdminService {
     });
 
     if (rentalPrinters.length > 0) {
-      const deviceIds = [...new Set(rentalPrinters.map((p) => p.deviceId).filter(Boolean))] as string[];
+      const deviceIds = [
+        ...new Set(rentalPrinters.map((p) => p.deviceId).filter(Boolean)),
+      ] as string[];
       await this.printerRepository.remove(rentalPrinters);
-      this.logger.log(`Removed ${rentalPrinters.length} rental printers for assignment ${assignmentId}`);
+      this.logger.log(
+        `Removed ${rentalPrinters.length} rental printers for assignment ${assignmentId}`,
+      );
 
       // Notify affected devices about config change
       for (const deviceId of deviceIds) {
         try {
           if (assignment.organizationId) {
-            this.gatewayService.notifyPrinterConfigUpdate(assignment.organizationId, deviceId);
+            this.gatewayService.notifyPrinterConfigUpdate(
+              assignment.organizationId,
+              deviceId,
+            );
           }
         } catch (error) {
           this.logger.warn(`Failed to notify device ${deviceId}: ${error}`);
@@ -883,7 +995,9 @@ export class AdminService {
       .addOrderBy('printer.name', 'ASC');
 
     if (params?.organizationId) {
-      qb.andWhere('printer.organizationId = :orgId', { orgId: params.organizationId });
+      qb.andWhere('printer.organizationId = :orgId', {
+        orgId: params.organizationId,
+      });
     } else {
       qb.andWhere('printer.organizationId IS NOT NULL');
     }
@@ -907,34 +1021,40 @@ export class AdminService {
           .andWhere('printer.deviceId IN (:...deviceIds)', { deviceIds })
           .getMany()
       : [];
-    const previousByDeviceId = new Map(previousPrinters.map((p) => [p.deviceId, p]));
+    const previousByDeviceId = new Map(
+      previousPrinters.map((p) => [p.deviceId, p]),
+    );
 
-    const unassigned: UnassignedPrinterDeviceListItem[] = unassignedDevices.map((d) => {
-      const prev = d.id ? previousByDeviceId.get(d.id) : undefined;
-      return {
-        id: d.id,
-        name: d.name,
-        suggestedName: d.suggestedName ?? null,
-        type: d.type,
-        status: d.status,
-        lastSeenAt: d.lastSeenAt,
-        createdAt: d.createdAt,
-        previousConfig: prev
-          ? {
-              printerId: prev.id,
-              name: prev.name,
-              type: prev.type,
-              connectionType: prev.connectionType,
-              connectionConfig: prev.connectionConfig,
-              paperWidth: prev.paperWidth,
-              hasCashDrawer: prev.hasCashDrawer,
-            }
-          : null,
-      };
-    });
+    const unassigned: UnassignedPrinterDeviceListItem[] = unassignedDevices.map(
+      (d) => {
+        const prev = d.id ? previousByDeviceId.get(d.id) : undefined;
+        return {
+          id: d.id,
+          name: d.name,
+          suggestedName: d.suggestedName ?? null,
+          type: d.type,
+          status: d.status,
+          lastSeenAt: d.lastSeenAt,
+          createdAt: d.createdAt,
+          previousConfig: prev
+            ? {
+                printerId: prev.id,
+                name: prev.name,
+                type: prev.type,
+                connectionType: prev.connectionType,
+                connectionConfig: prev.connectionConfig,
+                paperWidth: prev.paperWidth,
+                hasCashDrawer: prev.hasCashDrawer,
+              }
+            : null,
+        };
+      },
+    );
 
     return {
-      assigned: assigned as Array<Printer & { organization: Organization | null }>,
+      assigned: assigned as Array<
+        Printer & { organization: Organization | null }
+      >,
       unassigned,
     };
   }
@@ -954,9 +1074,14 @@ export class AdminService {
     ipAddress: string,
     userAgent?: string,
   ): Promise<Printer> {
-    const device = await this.deviceRepository.findOne({ where: { id: payload.deviceId } });
+    const device = await this.deviceRepository.findOne({
+      where: { id: payload.deviceId },
+    });
     if (!device) {
-      throw new NotFoundException({ code: ErrorCodes.NOT_FOUND, message: 'Gerät nicht gefunden' });
+      throw new NotFoundException({
+        code: ErrorCodes.NOT_FOUND,
+        message: 'Gerät nicht gefunden',
+      });
     }
     if (device.type !== DeviceType.PRINTER_AGENT) {
       throw new BadRequestException({
@@ -970,14 +1095,21 @@ export class AdminService {
         message: 'Gerät ist bereits einer Organisation zugewiesen',
       });
     }
-    const organization = await this.organizationRepository.findOne({ where: { id: payload.organizationId } });
+    const organization = await this.organizationRepository.findOne({
+      where: { id: payload.organizationId },
+    });
     if (!organization) {
-      throw new NotFoundException({ code: ErrorCodes.NOT_FOUND, message: 'Organisation nicht gefunden' });
+      throw new NotFoundException({
+        code: ErrorCodes.NOT_FOUND,
+        message: 'Organisation nicht gefunden',
+      });
     }
 
     // Re-use an existing Printer row for this device if it was previously assigned and
     // unassigned — that keeps name + USB IDs + paperWidth + cash-drawer setting.
-    const existing = await this.printerRepository.findOne({ where: { deviceId: device.id } });
+    const existing = await this.printerRepository.findOne({
+      where: { deviceId: device.id },
+    });
     let saved: Printer;
     if (existing) {
       existing.organizationId = payload.organizationId;
@@ -985,11 +1117,17 @@ export class AdminService {
       existing.type = payload.type;
       existing.connectionType = payload.connectionType;
       // Don't clobber a previously detected connectionConfig with an empty object.
-      if (payload.connectionConfig && Object.keys(payload.connectionConfig).length > 0) {
-        existing.connectionConfig = payload.connectionConfig as Printer['connectionConfig'];
+      if (
+        payload.connectionConfig &&
+        Object.keys(payload.connectionConfig).length > 0
+      ) {
+        existing.connectionConfig =
+          payload.connectionConfig as Printer['connectionConfig'];
       }
-      if (payload.paperWidth !== undefined) existing.paperWidth = payload.paperWidth;
-      if (payload.hasCashDrawer !== undefined) existing.hasCashDrawer = payload.hasCashDrawer;
+      if (payload.paperWidth !== undefined)
+        existing.paperWidth = payload.paperWidth;
+      if (payload.hasCashDrawer !== undefined)
+        existing.hasCashDrawer = payload.hasCashDrawer;
       existing.isActive = true;
       saved = await this.printerRepository.save(existing);
     } else {
@@ -998,7 +1136,8 @@ export class AdminService {
         name: payload.name,
         type: payload.type,
         connectionType: payload.connectionType,
-        connectionConfig: (payload.connectionConfig ?? {}) as Printer['connectionConfig'],
+        connectionConfig: (payload.connectionConfig ??
+          {}) as Printer['connectionConfig'],
         deviceId: device.id,
         paperWidth: payload.paperWidth ?? 80,
         hasCashDrawer: payload.hasCashDrawer ?? false,
@@ -1033,7 +1172,9 @@ export class AdminService {
       userAgent,
     );
 
-    this.logger.log(`Admin ${actor.id} assigned device ${device.id} as printer ${saved.id} to org ${payload.organizationId}`);
+    this.logger.log(
+      `Admin ${actor.id} assigned device ${device.id} as printer ${saved.id} to org ${payload.organizationId}`,
+    );
 
     return saved;
   }
@@ -1042,9 +1183,14 @@ export class AdminService {
     printerId: string,
     update: { hasCashDrawer?: boolean },
   ): Promise<Printer> {
-    const printer = await this.printerRepository.findOne({ where: { id: printerId } });
+    const printer = await this.printerRepository.findOne({
+      where: { id: printerId },
+    });
     if (!printer) {
-      throw new NotFoundException({ code: ErrorCodes.NOT_FOUND, message: 'Drucker nicht gefunden' });
+      throw new NotFoundException({
+        code: ErrorCodes.NOT_FOUND,
+        message: 'Drucker nicht gefunden',
+      });
     }
     if (update.hasCashDrawer !== undefined) {
       printer.hasCashDrawer = update.hasCashDrawer;
@@ -1063,7 +1209,10 @@ export class AdminService {
       relations: ['device', 'organization'],
     });
     if (!printer) {
-      throw new NotFoundException({ code: ErrorCodes.NOT_FOUND, message: 'Drucker nicht gefunden' });
+      throw new NotFoundException({
+        code: ErrorCodes.NOT_FOUND,
+        message: 'Drucker nicht gefunden',
+      });
     }
 
     const deviceId = printer.deviceId;
@@ -1074,10 +1223,15 @@ export class AdminService {
     // setup work. Only the org link gets cleared.
     // Note: using `update` instead of `save` so the loaded `organization` relation
     // doesn't override our null assignment when TypeORM resolves the FK.
-    await this.printerRepository.update({ id: printer.id }, { organizationId: null });
+    await this.printerRepository.update(
+      { id: printer.id },
+      { organizationId: null },
+    );
 
     if (deviceId) {
-      const device = await this.deviceRepository.findOne({ where: { id: deviceId } });
+      const device = await this.deviceRepository.findOne({
+        where: { id: deviceId },
+      });
       if (device) {
         // Only drop the org link — keep status=verified so the agent stays
         // connected via WebSocket and can be reassigned without re-pairing.
@@ -1117,7 +1271,11 @@ export class AdminService {
     newUsersThisMonth: number;
     newOrganizationsThisMonth: number;
   }> {
-    const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    const startOfMonth = new Date(
+      new Date().getFullYear(),
+      new Date().getMonth(),
+      1,
+    );
 
     const [
       totalOrganizations,
@@ -1153,18 +1311,26 @@ export class AdminService {
     };
   }
 
-  async getRevenueStats(startDate?: string, endDate?: string): Promise<{
+  async getRevenueStats(
+    startDate?: string,
+    endDate?: string,
+  ): Promise<{
     totalRevenue: number;
     rentalRevenue: number;
   }> {
-    const start = startDate ? new Date(startDate) : new Date(new Date().getFullYear(), 0, 1);
+    const start = startDate
+      ? new Date(startDate)
+      : new Date(new Date().getFullYear(), 0, 1);
     const end = endDate ? new Date(endDate) : new Date();
 
     const rentalRevenue = await this.rentalAssignmentRepository
       .createQueryBuilder('assignment')
       .select('SUM(assignment.totalAmount)', 'total')
       .where('assignment.status IN (:...statuses)', {
-        statuses: [RentalAssignmentStatus.ACTIVE, RentalAssignmentStatus.RETURNED],
+        statuses: [
+          RentalAssignmentStatus.ACTIVE,
+          RentalAssignmentStatus.RETURNED,
+        ],
       })
       .andWhere('assignment.createdAt BETWEEN :start AND :end', { start, end })
       .getRawOne();
@@ -1179,10 +1345,21 @@ export class AdminService {
 
   // === Audit Logs ===
 
-  async findAuditLogs(
-    queryDto: QueryAuditLogsDto,
-  ): Promise<{ data: AdminAuditLog[]; total: number; page: number; limit: number }> {
-    const { adminUserId, organizationId, action, startDate, endDate, page = 1, limit = 20 } = queryDto;
+  async findAuditLogs(queryDto: QueryAuditLogsDto): Promise<{
+    data: AdminAuditLog[];
+    total: number;
+    page: number;
+    limit: number;
+  }> {
+    const {
+      adminUserId,
+      organizationId,
+      action,
+      startDate,
+      endDate,
+      page = 1,
+      limit = 20,
+    } = queryDto;
 
     const queryBuilder = this.auditLogRepository
       .createQueryBuilder('log')
@@ -1194,7 +1371,9 @@ export class AdminService {
     }
 
     if (organizationId) {
-      queryBuilder.andWhere('log.organizationId = :organizationId', { organizationId });
+      queryBuilder.andWhere('log.organizationId = :organizationId', {
+        organizationId,
+      });
     }
 
     if (action) {
@@ -1316,6 +1495,219 @@ export class AdminService {
   }
 
   // === Private Helper ===
+
+  // === Customer Import (YAML) ===
+
+  /**
+   * Imports/updates organizations from admin-uploaded YAML files, one org
+   * per file. Idempotent per file: re-uploading a file with the same name
+   * updates the org it previously created instead of duplicating it (see
+   * Organization.provisioningSource). One file failing does not roll back
+   * the others — each is its own transaction.
+   */
+  async importCustomers(
+    files: Express.Multer.File[],
+    adminUserId: string,
+    ipAddress: string,
+    userAgent?: string,
+  ): Promise<ImportCustomerResult[]> {
+    const results: ImportCustomerResult[] = [];
+
+    for (const file of files) {
+      const filename = file.originalname;
+      try {
+        const raw = yaml.load(file.buffer.toString('utf-8'));
+        const dto = plainToInstance(ImportCustomerYamlDto, raw);
+        const errors = await validate(dto, {
+          whitelist: true,
+          forbidNonWhitelisted: true,
+        });
+        if (errors.length > 0) {
+          const message = errors
+            .map((e) => Object.values(e.constraints || {}).join(', '))
+            .join('; ');
+          throw new BadRequestException({
+            code: ErrorCodes.VALIDATION_ERROR,
+            message,
+          });
+        }
+
+        results.push(
+          await this.upsertImportedCustomer(
+            dto,
+            filename,
+            adminUserId,
+            ipAddress,
+            userAgent,
+          ),
+        );
+      } catch (error) {
+        this.logger.warn(
+          `Customer import failed for ${filename}: ${(error as Error).message}`,
+        );
+        results.push({
+          filename,
+          action: 'error',
+          error: error instanceof Error ? error.message : 'Unbekannter Fehler',
+        });
+      }
+    }
+
+    return results;
+  }
+
+  private async upsertImportedCustomer(
+    dto: ImportCustomerYamlDto,
+    filename: string,
+    adminUserId: string,
+    ipAddress: string,
+    userAgent?: string,
+  ): Promise<ImportCustomerResult> {
+    const existing = await this.organizationRepository.findOne({
+      where: { provisioningSource: filename },
+    });
+
+    if (existing) {
+      const before = { ...existing };
+      existing.name = dto.name;
+      if (dto.settings) {
+        existing.settings = dto.settings as unknown as Organization['settings'];
+      }
+      if (dto.billingEmail !== undefined) {
+        existing.billingEmail = dto.billingEmail;
+      }
+      if (dto.billingAddress) {
+        existing.billingAddress = dto.billingAddress;
+      }
+      await this.organizationRepository.save(existing);
+
+      await this.createAuditLog(
+        adminUserId,
+        existing.id,
+        AdminAction.IMPORT_CUSTOMER,
+        'organization',
+        existing.id,
+        { before, after: existing, sourceFile: filename },
+        ipAddress,
+        userAgent,
+      );
+
+      return {
+        filename,
+        action: 'updated',
+        organizationId: existing.id,
+        organizationSlug: existing.slug,
+      };
+    }
+
+    const existingUser = await this.userRepository.findOne({
+      where: { email: dto.admin.email.toLowerCase() },
+    });
+    if (existingUser) {
+      throw new ConflictException({
+        code: ErrorCodes.USER_EXISTS,
+        message: `Ein Benutzer mit der E-Mail ${dto.admin.email} existiert bereits`,
+      });
+    }
+
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      const slug =
+        dto.slug ||
+        (await this.generateUniqueOrgSlug(dto.name, queryRunner.manager));
+
+      const organization = this.organizationRepository.create({
+        name: dto.name,
+        slug,
+        supportPin: this.generateSupportPin(),
+        settings: (dto.settings as unknown as Organization['settings']) || {},
+        billingEmail: dto.billingEmail || null,
+        billingAddress: dto.billingAddress || null,
+        provisioningSource: filename,
+      });
+      await queryRunner.manager.save(organization);
+
+      const passwordHash = await bcrypt.hash(dto.admin.password, BCRYPT_ROUNDS);
+      const user = this.userRepository.create({
+        email: dto.admin.email.toLowerCase(),
+        passwordHash,
+        firstName: dto.admin.firstName,
+        lastName: dto.admin.lastName,
+        isActive: true,
+        isSuperAdmin: false,
+        emailVerifiedAt: new Date(),
+      });
+      await queryRunner.manager.save(user);
+
+      const userOrganization = this.userOrganizationRepository.create({
+        userId: user.id,
+        organizationId: organization.id,
+        role: OrganizationRole.ADMIN,
+      });
+      await queryRunner.manager.save(userOrganization);
+
+      await queryRunner.commitTransaction();
+
+      this.logger.log(
+        `Customer imported from ${filename}: ${organization.name} (${organization.id})`,
+      );
+
+      await this.createAuditLog(
+        adminUserId,
+        organization.id,
+        AdminAction.IMPORT_CUSTOMER,
+        'organization',
+        organization.id,
+        { after: organization, adminEmail: user.email, sourceFile: filename },
+        ipAddress,
+        userAgent,
+      );
+
+      return {
+        filename,
+        action: 'created',
+        organizationId: organization.id,
+        organizationSlug: organization.slug,
+      };
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  private async generateUniqueOrgSlug(
+    name: string,
+    manager: EntityManager,
+  ): Promise<string> {
+    const baseSlug = name
+      .toLowerCase()
+      .replace(/[äöü]/g, (match) => {
+        const map: Record<string, string> = { ä: 'ae', ö: 'oe', ü: 'ue' };
+        return map[match];
+      })
+      .replace(/ß/g, 'ss')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '');
+
+    let slug = baseSlug;
+    let counter = 1;
+
+    while (await manager.findOne(Organization, { where: { slug } })) {
+      slug = `${baseSlug}-${counter}`;
+      counter++;
+    }
+
+    return slug;
+  }
+
+  private generateSupportPin(): string {
+    return Math.floor(100000 + Math.random() * 900000).toString();
+  }
 
   private async createAuditLog(
     adminUserId: string,

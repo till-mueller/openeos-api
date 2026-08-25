@@ -120,6 +120,10 @@ export enum SubscriptionStatus {
 
 @Entity('organizations')
 @Index(['slug'], { unique: true })
+@Index(['provisioningSource'], {
+  unique: true,
+  where: '"provisioning_source" IS NOT NULL',
+})
 export class Organization extends SoftDeleteEntity {
   @Column({ type: 'varchar', length: 255 })
   name: string;
@@ -146,6 +150,20 @@ export class Organization extends SoftDeleteEntity {
 
   @Column({ name: 'support_pin', type: 'varchar', length: 6 })
   supportPin: string;
+
+  /**
+   * Filename (with extension) of the YAML file this org was created/last
+   * updated from via the admin "import customers" flow. `null` for orgs
+   * created any other way. Unique so re-uploading the same file upserts
+   * instead of duplicating.
+   */
+  @Column({
+    name: 'provisioning_source',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+  })
+  provisioningSource: string | null;
 
   @Column({
     name: 'discount_percent',
@@ -205,17 +223,32 @@ export class Organization extends SoftDeleteEntity {
   subscriptionCurrentPeriodEnd: Date | null;
 
   // Event billing (pay-per-event activation)
-  @Column({ name: 'billing_mode', type: 'varchar', length: 20, default: 'invoice' })
+  @Column({
+    name: 'billing_mode',
+    type: 'varchar',
+    length: 20,
+    default: 'invoice',
+  })
   billingMode: OrganizationBillingMode;
 
-  @Column({ name: 'event_price_override', type: 'decimal', precision: 10, scale: 2, nullable: true })
+  @Column({
+    name: 'event_price_override',
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    nullable: true,
+  })
   eventPriceOverride: number | null;
 
   // Support Chat
   @Column({ name: 'priority_support', type: 'boolean', default: false })
   prioritySupport: boolean;
 
-  @Column({ name: 'support_telegram_topic_id', type: 'integer', nullable: true })
+  @Column({
+    name: 'support_telegram_topic_id',
+    type: 'integer',
+    nullable: true,
+  })
   supportTelegramTopicId: number | null;
 
   // Relations
