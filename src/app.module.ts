@@ -13,6 +13,7 @@ import {
   databaseConfig,
   redisConfig,
   jwtConfig,
+  oidcConfig,
   validationSchema,
 } from './config';
 import { JwtAuthGuard } from './common/guards';
@@ -59,7 +60,7 @@ import { TseModule } from './modules/tse';
     // Configuration
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [configuration, databaseConfig, redisConfig, jwtConfig],
+      load: [configuration, databaseConfig, redisConfig, jwtConfig, oidcConfig],
       validationSchema,
       validationOptions: {
         abortEarly: false,

@@ -35,8 +35,10 @@ export class User extends SoftDeleteEntity {
   @Column({ type: 'varchar', length: 255, unique: true })
   email: string;
 
-  @Column({ name: 'password_hash', type: 'varchar', length: 255 })
-  passwordHash: string;
+  // Nullable: SSO-only users (see sso_provider/sso_subject below) never set
+  // a local password.
+  @Column({ name: 'password_hash', type: 'varchar', length: 255, nullable: true })
+  passwordHash: string | null;
 
   @Column({ name: 'first_name', type: 'varchar', length: 100 })
   firstName: string;
@@ -93,6 +95,14 @@ export class User extends SoftDeleteEntity {
   // User Preferences
   @Column({ type: 'jsonb', default: { theme: 'system', locale: 'de', notifications: { email: true, push: true } } })
   preferences: UserPreferences;
+
+  // SSO (OIDC, e.g. Authentik) — set once a user has signed in via an
+  // identity provider. 'sub' is the provider's stable subject identifier.
+  @Column({ name: 'sso_provider', type: 'varchar', length: 50, nullable: true })
+  ssoProvider: string | null;
+
+  @Column({ name: 'sso_subject', type: 'varchar', length: 255, nullable: true })
+  ssoSubject: string | null;
 
   // Pending Email Change
   @Column({ name: 'pending_email', type: 'varchar', length: 255, nullable: true })

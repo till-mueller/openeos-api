@@ -76,6 +76,15 @@ export const validationSchema = Joi.object({
   SUPPORT_TELEGRAM_BOT_TOKEN: Joi.string().allow('').default(''),
   SUPPORT_TELEGRAM_CHAT_ID: Joi.string().allow('').default(''),
 
+  // SSO via OIDC (e.g. Authentik) — all optional; unset issuer/client
+  // credentials keep SSO disabled and login stays password-only.
+  AUTHENTIK_ISSUER_URL: Joi.string().allow('').default(''),
+  AUTHENTIK_CLIENT_ID: Joi.string().allow('').default(''),
+  AUTHENTIK_CLIENT_SECRET: Joi.string().allow('').default(''),
+  AUTHENTIK_REDIRECT_URI: Joi.string().allow('').default(''),
+  AUTHENTIK_SCOPE: Joi.string().allow('').default(''),
+  AUTHENTIK_PROVIDER_NAME: Joi.string().allow('').default(''),
+
   // Offline box sync (docs/design/offline-box-sync.md) — all optional,
   // default 'central' role means every existing deployment is unaffected.
   SYNC_ROLE: Joi.string().valid('central', 'box').default('central'),
