@@ -6,11 +6,14 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   UseGuards,
   Res,
   Req,
   HttpCode,
   HttpStatus,
+  NotFoundException,
+  Logger,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
@@ -18,6 +21,7 @@ import type { Response, Request } from 'express';
 import { ConfigService } from '@nestjs/config';
 import { AuthService } from './auth.service';
 import { TwoFactorService } from './two-factor.service';
+import { OidcService } from './oidc.service';
 import {
   RegisterDto,
   LoginDto,
@@ -66,10 +70,13 @@ function parseDurationToMs(duration: string): number {
 @ApiTags('Auth')
 @Controller('auth')
 export class AuthController {
+  private readonly logger = new Logger(AuthController.name);
+
   constructor(
     private readonly authService: AuthService,
     private readonly twoFactorService: TwoFactorService,
     private readonly configService: ConfigService,
+    private readonly oidcService: OidcService,
   ) {}
 
   @Public()
@@ -142,6 +149,65 @@ export class AuthController {
       user: this.sanitizeUser(result.user),
       accessToken: result.accessToken,
     };
+  }
+
+  @Public()
+  @Get('sso/status')
+  @ApiOperation({ summary: 'SSO availability', description: 'Whether SSO login is configured, for the login page to show/hide the button' })
+  @ApiResponse({ status: 200, description: 'SSO status' })
+  ssoStatus() {
+    return {
+      enabled: this.oidcService.isEnabled(),
+      provider: this.oidcService.provider,
+    };
+  }
+
+  @Public()
+  @Get('sso/authentik')
+  @ApiOperation({ summary: 'Start SSO login', description: 'Redirects to the configured OIDC provider (e.g. Authentik) to begin login' })
+  @ApiResponse({ status: 302, description: 'Redirect to identity provider' })
+  @ApiResponse({ status: 404, description: 'SSO not configured' })
+  async ssoLogin(
+    @Query('redirect') redirect: string | undefined,
+    @Res() response: Response,
+  ) {
+    if (!this.oidcService.isEnabled()) {
+      throw new NotFoundException('SSO ist nicht konfiguriert');
+    }
+
+    const url = await this.oidcService.buildAuthorizationUrl(redirect);
+    response.redirect(url);
+  }
+
+  @Public()
+  @Get('sso/authentik/callback')
+  @ApiOperation({ summary: 'SSO callback', description: 'Handles the OIDC provider redirect, issues tokens, and sends the browser back to the app' })
+  @ApiResponse({ status: 302, description: 'Redirect back to the app' })
+  async ssoCallback(
+    @Query('code') code: string | undefined,
+    @Query('state') state: string | undefined,
+    @Query('error') error: string | undefined,
+    @Res() response: Response,
+  ) {
+    const webUrl = this.configService.get<string>('APP_URL') || 'http://localhost:3000';
+
+    if (error || !code || !state || !this.oidcService.isEnabled()) {
+      response.redirect(`${webUrl}/login?error=sso_failed`);
+      return;
+    }
+
+    try {
+      const { profile, redirect } = await this.oidcService.handleCallback(code, state);
+      const result = await this.authService.loginWithSsoProfile(profile);
+
+      this.setRefreshTokenCookie(response, result.refreshToken);
+
+      const target = redirect ? decodeURIComponent(redirect) : '/sso-callback';
+      response.redirect(`${webUrl}${target}`);
+    } catch (err) {
+      this.logger.warn(`SSO callback failed: ${err instanceof Error ? err.message : err}`);
+      response.redirect(`${webUrl}/login?error=sso_failed`);
+    }
   }
 
   @Public()

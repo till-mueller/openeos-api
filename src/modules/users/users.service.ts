@@ -91,7 +91,9 @@ export class UsersService {
     });
 
     // Verify current password
-    const isPasswordValid = await bcrypt.compare(dto.password, user.passwordHash);
+    const isPasswordValid = user.passwordHash
+      ? await bcrypt.compare(dto.password, user.passwordHash)
+      : false;
     if (!isPasswordValid) {
       throw new BadRequestException({
         code: ErrorCodes.INVALID_CREDENTIALS,
