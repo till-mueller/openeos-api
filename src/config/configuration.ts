@@ -45,6 +45,14 @@ export default () => ({
     webhookSecret: process.env.SUMUP_WEBHOOK_SECRET || '',
   },
 
+  fiskaly: {
+    // Defaults to the TEST (sandbox) environment — the middleware base URL —
+    // so that enabling TSE fiskaly without an explicit FISKALY_API_BASE
+    // always targets the non-billable, ephemeral test TSS. Point
+    // FISKALY_API_BASE at https://kassensichv.fiskaly.com/api/v2 for LIVE.
+    baseUrl: process.env.FISKALY_API_BASE || 'https://kassensichv-middleware.fiskaly.com/api/v2',
+  },
+
   storage: {
     type: process.env.STORAGE_TYPE || 'local',
     localPath: process.env.STORAGE_LOCAL_PATH || './uploads',

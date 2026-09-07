@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import {
   TseFiskalyConfig,
@@ -8,8 +9,6 @@ import {
   TseExportInput,
   TseExportResult,
 } from '../tse.interface';
-
-const API_BASE = 'https://kassensichv.io/api/v2';
 
 interface FiskalyAuthResponse {
   access_token: string;
@@ -37,12 +36,16 @@ interface FiskalyTss {
 }
 
 /**
- * fiskaly Cloud TSE (kassensichv.io) — a cloud-hosted TSE certified under
+ * fiskaly Cloud TSE (SIGN DE) — a cloud-hosted TSE certified under
  * KassenSichV. This talks to the real REST API, but the request/response
  * shapes here follow fiskaly's v2 docs as of this writing; verify against a
  * provisioned TSS before relying on it in production, since fiskaly does
  * version their schema (`schema/version`) and this integrates against
  * "Kassenbeleg-V1" only.
+ *
+ * The API base defaults to the fiskaly TEST environment so test credentials
+ * work out of the box; point `FISKALY_API_BASE` at the LIVE base URL to
+ * sign real receipts.
  */
 @Injectable()
 export class FiskalyTseProvider implements TseProvider<TseFiskalyConfig> {
@@ -50,13 +53,19 @@ export class FiskalyTseProvider implements TseProvider<TseFiskalyConfig> {
   private readonly logger = new Logger(FiskalyTseProvider.name);
   private tokenCache = new Map<string, { token: string; expiresAt: number }>();
 
+  constructor(private readonly configService: ConfigService) {}
+
+  private get apiBase(): string {
+    return this.configService.get<string>('fiskaly.baseUrl', 'https://kassensichv-middleware.fiskaly.com/api/v2');
+  }
+
   private async getAccessToken(config: TseFiskalyConfig): Promise<string> {
     const cached = this.tokenCache.get(config.apiKey);
     if (cached && cached.expiresAt > Date.now()) {
       return cached.token;
     }
 
-    const res = await fetch(`${API_BASE}/auth`, {
+    const res = await fetch(`${this.apiBase}/auth`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ api_key: config.apiKey, api_secret: config.apiSecret }),
@@ -65,7 +74,8 @@ export class FiskalyTseProvider implements TseProvider<TseFiskalyConfig> {
       throw new Error(`fiskaly auth failed: ${res.status} ${await res.text()}`);
     }
     const data = (await res.json()) as FiskalyAuthResponse;
-    // JWTs from fiskaly are typically valid ~55min; refresh well before that.
+    // JWTs in the TEST environment expire after ~600s, in production after
+    // ~24h. Refresh well before that in either case.
     this.tokenCache.set(config.apiKey, { token: data.access_token, expiresAt: Date.now() + 45 * 60 * 1000 });
     return data.access_token;
   }
@@ -77,7 +87,7 @@ export class FiskalyTseProvider implements TseProvider<TseFiskalyConfig> {
     body?: unknown,
   ): Promise<T> {
     const token = await this.getAccessToken(config);
-    const res = await fetch(`${API_BASE}${path}`, {
+    const res = await fetch(`${this.apiBase}${path}`, {
       method,
       headers: {
         Authorization: `Bearer ${token}`,
@@ -213,7 +223,7 @@ export class FiskalyTseProvider implements TseProvider<TseFiskalyConfig> {
     }
 
     const token = await this.getAccessToken(config);
-    const res = await fetch(`${API_BASE}/tss/${config.tssId}/exports/${exportId}/download`, {
+    const res = await fetch(`${this.apiBase}/tss/${config.tssId}/exports/${exportId}/download`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) {

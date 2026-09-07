@@ -55,6 +55,9 @@ export const validationSchema = Joi.object({
   SUMUP_MERCHANT_CODE: Joi.string().allow('').default(''),
   SUMUP_WEBHOOK_SECRET: Joi.string().allow('').default(''),
 
+  // fiskaly Cloud TSE — defaults to the TEST environment (sandbox middleware)
+  FISKALY_API_BASE: Joi.string().default('https://kassensichv-middleware.fiskaly.com/api/v2'),
+
   // Storage
   STORAGE_TYPE: Joi.string().valid('local', 's3').default('local'),
   STORAGE_LOCAL_PATH: Joi.string().default('./uploads'),

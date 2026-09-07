@@ -15,9 +15,14 @@ function jsonResponse(body: unknown, ok = true, status = 200) {
 describe('FiskalyTseProvider', () => {
   let provider: FiskalyTseProvider;
   let fetchMock: jest.Mock;
+  let baseUrl: string | undefined;
 
   beforeEach(() => {
-    provider = new FiskalyTseProvider();
+    baseUrl = 'https://kassensichv-middleware.fiskaly.com/api/v2';
+    provider = new FiskalyTseProvider({
+      get: (key: string, fallback?: string) =>
+        key === 'fiskaly.baseUrl' ? (baseUrl ?? fallback) : undefined,
+    } as never);
     fetchMock = jest.fn();
     global.fetch = fetchMock as unknown as typeof fetch;
   });
@@ -25,6 +30,44 @@ describe('FiskalyTseProvider', () => {
   function mockAuth() {
     fetchMock.mockResolvedValueOnce(jsonResponse({ access_token: 'jwt-token' }));
   }
+
+  describe('api base', () => {
+    it('defaults to the fiskaly TEST (middleware) environment', async () => {
+      baseUrl = undefined;
+      provider = new FiskalyTseProvider({
+        get: (key: string, fallback?: string) =>
+          key === 'fiskaly.baseUrl' ? (baseUrl ?? fallback) : undefined,
+      } as never);
+      mockAuth();
+      fetchMock.mockResolvedValueOnce(jsonResponse({}));
+
+      await provider.ensureClient(config, 'client-1');
+
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        1,
+        expect.stringContaining('https://kassensichv-middleware.fiskaly.com/api/v2/auth'),
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+
+    it('honors an explicit FISKALY_API_BASE', async () => {
+      baseUrl = 'https://kassensichv.fiskaly.com/api/v2';
+      provider = new FiskalyTseProvider({
+        get: (key: string, fallback?: string) =>
+          key === 'fiskaly.baseUrl' ? (baseUrl ?? fallback) : undefined,
+      } as never);
+      mockAuth();
+      fetchMock.mockResolvedValueOnce(jsonResponse({}));
+
+      await provider.ensureClient(config, 'client-1');
+
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        1,
+        expect.stringContaining('https://kassensichv.fiskaly.com/api/v2/auth'),
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+  });
 
   describe('ensureClient', () => {
     it('authenticates then PUTs the client', async () => {
