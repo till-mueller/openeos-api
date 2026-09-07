@@ -1,5 +1,5 @@
 import { Entity, Column, ManyToOne, OneToMany, JoinColumn, Index } from 'typeorm';
-import { BaseEntity } from './base.entity';
+import { SoftDeleteEntity } from './base.entity';
 import { Order } from './order.entity';
 import { User } from './user.entity';
 import { Device } from './device.entity';
@@ -37,11 +37,45 @@ export interface PaymentMetadata {
   [key: string]: unknown;
 }
 
+/**
+ * Signed transaction record from the organization's TSE (Technische
+ * Sicherheitseinrichtung), per KassenSichV. Populated by TseService right
+ * after capture; `failed: true` marks a recorded TSE outage (BMF's
+ * Ausfall-Regelung — the sale still completes, but the gap must be provable).
+ */
+export interface TseTransactionData {
+  provider: 'fiskaly' | 'local' | 'none';
+  clientId: string;
+  transactionNumber: number;
+  serialNumber: string;
+  signatureCounter: number;
+  signatureValue: string;
+  signatureAlgorithm: string;
+  startTime: string;
+  endTime: string;
+  processType: string;
+  processData: string;
+  /** Pre-built payload for the receipt's TSE QR code. */
+  qrCodeData: string;
+  failed?: boolean;
+  failureReason?: string;
+}
+
 @Entity('payments')
 @Index(['orderId'])
-export class Payment extends BaseEntity {
+export class Payment extends SoftDeleteEntity {
   @Column({ name: 'order_id', type: 'uuid' })
   orderId: string;
+
+  /** Offline box sync (docs/design/offline-box-sync.md) — see order.entity.ts. */
+  @Column({ name: 'origin_node', type: 'varchar', length: 255, nullable: true })
+  originNode: string | null;
+
+  @Column({ name: 'sync_version', type: 'bigint', nullable: true })
+  syncVersion: string | null;
+
+  @Column({ name: 'synced_at', type: 'timestamp with time zone', nullable: true })
+  syncedAt: Date | null;
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   amount: number;
@@ -60,6 +94,9 @@ export class Payment extends BaseEntity {
 
   @Column({ type: 'jsonb', default: {} })
   metadata: PaymentMetadata;
+
+  @Column({ name: 'tse_data', type: 'jsonb', nullable: true, default: null })
+  tseData: TseTransactionData | null;
 
   @Column({ name: 'processed_by_user_id', type: 'uuid', nullable: true })
   processedByUserId: string | null;
@@ -86,5 +123,9 @@ export class Payment extends BaseEntity {
   // Helper methods
   isSuccessful(): boolean {
     return this.status === PaymentTransactionStatus.CAPTURED;
+  }
+
+  hasTseSignature(): boolean {
+    return !!this.tseData && !this.tseData.failed;
   }
 }

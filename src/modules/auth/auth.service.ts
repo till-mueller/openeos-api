@@ -32,6 +32,7 @@ import {
   ChangePasswordDto,
 } from './dto';
 import { JwtPayload } from './strategies/jwt.strategy';
+import { OidcProfile } from './oidc.service';
 
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCK_DURATION_MINUTES = 15;
@@ -299,6 +300,14 @@ export class AuthService {
       });
     }
 
+    // SSO-only accounts (no local password) can't authenticate this way.
+    if (!user.passwordHash) {
+      throw new UnauthorizedException({
+        code: ErrorCodes.INVALID_CREDENTIALS,
+        message: 'Dieses Konto verwendet Single Sign-On. Bitte nutze die SSO-Anmeldung',
+      });
+    }
+
     // Validate password
     const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
 
@@ -356,6 +365,73 @@ export class AuthService {
       user,
       ...tokens,
     };
+  }
+
+  /**
+   * Finds or creates a user for a verified SSO profile, then issues tokens
+   * the same way as a password login. Linking precedence: existing
+   * provider+subject match, then an existing account with the same email
+   * (the IdP has already verified that email), else a brand-new account.
+   */
+  async loginWithSsoProfile(profile: OidcProfile): Promise<{
+    user: User;
+    accessToken: string;
+    refreshToken: string;
+  }> {
+    let user = await this.userRepository.findOne({
+      where: { ssoProvider: profile.provider, ssoSubject: profile.sub },
+      relations: ['userOrganizations', 'userOrganizations.organization'],
+    });
+
+    if (!user) {
+      user = await this.userRepository.findOne({
+        where: { email: profile.email },
+        relations: ['userOrganizations', 'userOrganizations.organization'],
+      });
+
+      if (user) {
+        user.ssoProvider = profile.provider;
+        user.ssoSubject = profile.sub;
+        if (!user.emailVerifiedAt && profile.emailVerified) {
+          user.emailVerifiedAt = new Date();
+        }
+        await this.userRepository.save(user);
+      }
+    }
+
+    if (!user) {
+      user = this.userRepository.create({
+        email: profile.email,
+        passwordHash: null,
+        firstName: profile.firstName,
+        lastName: profile.lastName,
+        isActive: true,
+        emailVerifiedAt: profile.emailVerified ? new Date() : null,
+        ssoProvider: profile.provider,
+        ssoSubject: profile.sub,
+      });
+      await this.userRepository.save(user);
+      this.logger.log(`User created via SSO (${profile.provider}): ${user.email}`);
+    }
+
+    if (!user.isActive) {
+      throw new UnauthorizedException({
+        code: ErrorCodes.ACCOUNT_INACTIVE,
+        message: 'Konto ist deaktiviert',
+      });
+    }
+
+    if (user.lockedUntil && user.lockedUntil > new Date()) {
+      throw new UnauthorizedException({
+        code: ErrorCodes.ACCOUNT_LOCKED,
+        message: 'Konto ist gesperrt',
+      });
+    }
+
+    user.lastLoginAt = new Date();
+    await this.userRepository.save(user);
+
+    return this.login(user);
   }
 
   async refreshTokens(refreshTokenValue: string): Promise<{
@@ -550,10 +626,9 @@ export class AuthService {
     }
 
     // Validate current password
-    const isPasswordValid = await bcrypt.compare(
-      currentPassword,
-      user.passwordHash,
-    );
+    const isPasswordValid = user.passwordHash
+      ? await bcrypt.compare(currentPassword, user.passwordHash)
+      : false;
 
     if (!isPasswordValid) {
       throw new BadRequestException({

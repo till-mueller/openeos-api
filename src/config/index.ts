@@ -4,5 +4,7 @@ export { default as redisConfig } from './redis.config';
 export type { RedisConfig } from './redis.config';
 export { default as jwtConfig } from './jwt.config';
 export type { JwtConfig } from './jwt.config';
+export { default as oidcConfig } from './oidc.config';
+export type { OidcConfig } from './oidc.config';
 export { validationSchema } from './validation.schema';
 export { default as dataSource, dataSourceOptions } from './data-source';

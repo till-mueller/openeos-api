@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import {
   Organization,
   User,
+  UserOrganization,
   SubscriptionConfig,
   Invoice,
   RentalHardware,
@@ -25,6 +26,7 @@ import { PrintersModule } from '../printers/printers.module';
     TypeOrmModule.forFeature([
       Organization,
       User,
+      UserOrganization,
       SubscriptionConfig,
       Invoice,
       RentalHardware,

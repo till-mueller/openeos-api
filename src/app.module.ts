@@ -13,6 +13,7 @@ import {
   databaseConfig,
   redisConfig,
   jwtConfig,
+  oidcConfig,
   validationSchema,
 } from './config';
 import { JwtAuthGuard } from './common/guards';
@@ -33,6 +34,7 @@ import { QrCodesModule } from './modules/qr-codes';
 import { OnlineOrdersModule } from './modules/online-orders';
 import { InvoicesModule } from './modules/invoices';
 import { RentalsModule } from './modules/rentals';
+import { SyncModule } from './modules/sync/sync.module';
 import { AdminModule } from './modules/admin';
 import { ReportsModule } from './modules/reports';
 import { UploadsModule } from './modules/uploads';
@@ -48,6 +50,7 @@ import { PfandTypesModule } from './modules/pfand-types';
 import { PlatformSettingsModule } from './modules/platform-settings';
 import { SupportModule } from './modules/support';
 import { ContactModule } from './modules/contact';
+import { TseModule } from './modules/tse';
 
 @Module({
   imports: [
@@ -57,7 +60,7 @@ import { ContactModule } from './modules/contact';
     // Configuration
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [configuration, databaseConfig, redisConfig, jwtConfig],
+      load: [configuration, databaseConfig, redisConfig, jwtConfig, oidcConfig],
       validationSchema,
       validationOptions: {
         abortEarly: false,
@@ -133,6 +136,7 @@ import { ContactModule } from './modules/contact';
     OnlineOrdersModule,
     InvoicesModule,
     RentalsModule,
+    SyncModule,
     AdminModule,
     ReportsModule,
     UploadsModule,
@@ -147,6 +151,7 @@ import { ContactModule } from './modules/contact';
     PfandTypesModule,
     PlatformSettingsModule,
     SupportModule,
+    TseModule,
     ContactModule,
   ],
   controllers: [],

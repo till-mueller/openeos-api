@@ -229,6 +229,55 @@ export interface PrinterConfigUpdateEvent {
   deviceId: string;
 }
 
+// TSE Agent Events (Server -> Agent) — local hardware TSE signing, delivered
+// to whichever printer-agent device has TSE enabled (organization.settings.tse.local.agentDeviceId).
+// The agent's socket.io ack IS the response — there is no separate Agent -> Server event.
+export interface TseSignTransactionEvent {
+  requestId: string;
+  clientId: string;
+  amount: number;
+  currency: string;
+  paymentMethod: string;
+}
+
+export interface TseSignTransactionResponse {
+  ok: boolean;
+  transactionNumber?: number;
+  serialNumber?: string;
+  signatureCounter?: number;
+  signatureValue?: string;
+  signatureAlgorithm?: string;
+  startTime?: string;
+  endTime?: string;
+  qrCodeData?: string;
+  error?: string;
+}
+
+export interface TseTestConnectionEvent {
+  requestId: string;
+}
+
+export interface TseTestConnectionResponse {
+  ok: boolean;
+  serialNumber?: string;
+  message?: string;
+}
+
+export interface TseExportDataEvent {
+  requestId: string;
+  clientId: string;
+  periodStart: string;
+  periodEnd: string;
+}
+
+export interface TseExportDataResponse {
+  ok: boolean;
+  /** Base64-encoded export archive (TR-03153 TAR export). */
+  dataBase64?: string;
+  filename?: string;
+  message?: string;
+}
+
 // Event names as constants
 export const GatewayEvents = {
   // Client to Server
@@ -280,6 +329,11 @@ export const GatewayEvents = {
 
   // Printer Agent Config Events
   PRINTER_CONFIG_UPDATE: 'printerConfigUpdate',
+
+  // TSE Agent Events (Server -> Agent, ack carries the response)
+  TSE_SIGN_TRANSACTION: 'tseSignTransaction',
+  TSE_TEST_CONNECTION: 'tseTestConnection',
+  TSE_EXPORT_DATA: 'tseExportData',
 
   // Connection events
   CONNECTED: 'connected',

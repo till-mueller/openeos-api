@@ -6,6 +6,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { TwoFactorService } from './two-factor.service';
+import { OidcService } from './oidc.service';
 import { JwtStrategy, LocalStrategy } from './strategies';
 import { EncryptionService } from '../../common/services/encryption.service';
 import {
@@ -42,7 +43,7 @@ import {
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, TwoFactorService, EncryptionService, JwtStrategy, LocalStrategy],
+  providers: [AuthService, TwoFactorService, EncryptionService, JwtStrategy, LocalStrategy, OidcService],
   exports: [AuthService, TwoFactorService, JwtModule],
 })
 export class AuthModule {}
