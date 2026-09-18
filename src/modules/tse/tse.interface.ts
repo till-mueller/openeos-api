@@ -4,6 +4,17 @@ export interface TseFiskalyConfig {
   apiKey: string;
   apiSecret: string;
   tssId: string;
+  /**
+   * Set once by createTss's own bootstrap and persisted alongside tssId.
+   * fiskaly's createClient requires an admin-authenticated session; this
+   * lets ensureClient re-authenticate and retry if a later client
+   * registration (e.g. a new till's first sale) needs it and the session
+   * has lapsed. The one-time admin_puk fiskaly returns at TSS creation is
+   * deliberately NOT persisted here or anywhere else -- fiskaly itself
+   * stops returning it once the TSS leaves state CREATED, and it's only
+   * needed once, to set this PIN in the first place.
+   */
+  adminPin?: string;
 }
 
 /** Local/offline hardware TSE (e.g. Swissbit) reached via an on-prem printer-agent. */
@@ -44,6 +55,19 @@ export type TseTransactionResult = Omit<TseTransactionData, 'failed' | 'failureR
 
 export interface TseProvider<TConfig = TseFiskalyConfig | TseLocalConfig> {
   readonly name: 'fiskaly' | 'local' | 'none';
+
+  /**
+   * Provisions a brand-new TSS end-to-end: create it, and walk its
+   * lifecycle from CREATED through UNINITIALIZED to INITIALIZED (fiskaly
+   * always starts a new TSS in CREATED regardless of what's requested).
+   * Does not register a client itself -- the caller (TseService) does that
+   * afterward with the returned tssId, via the regular ensureClient path,
+   * so there's exactly one place that registers clients. There's no "adopt
+   * an existing TSS" path here, only "create one openEOS controls
+   * end-to-end". Optional: only cloud providers with a comparable resource
+   * have this.
+   */
+  createTss?(apiKey: string, apiSecret: string): Promise<{ tssId: string; adminPin: string }>;
 
   /** Idempotently register `clientId` as a till on the TSS. No-op for providers where registration happens inline with signing. */
   ensureClient(config: TConfig, clientId: string): Promise<void>;

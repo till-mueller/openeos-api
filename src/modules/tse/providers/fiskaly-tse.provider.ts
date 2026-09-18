@@ -33,6 +33,8 @@ interface FiskalyTx {
 
 interface FiskalyTss {
   serial_number: string;
+  state?: string;
+  admin_puk?: string;
 }
 
 /**
@@ -101,11 +103,80 @@ export class FiskalyTseProvider implements TseProvider<TseFiskalyConfig> {
     return (await res.json()) as T;
   }
 
+  /**
+   * Creates and fully initializes a new TSS from scratch: fiskaly always
+   * starts a TSS in state CREATED (whatever `state` you pass at creation is
+   * ignored -- confirmed live), and CREATED cannot sign transactions or
+   * register clients. The real transition path, confirmed against
+   * fiskaly's own docs and live sandbox testing, is:
+   *
+   *   CREATED --PATCH state=UNINITIALIZED--> UNINITIALIZED
+   *     (fiskaly requires a short settle time here; empirically ~30s+)
+   *   --PATCH /admin {admin_puk, new_admin_pin}--> (admin PIN set)
+   *   --POST /admin/auth {admin_pin}--> (admin session established)
+   *   --PATCH state=INITIALIZED--> INITIALIZED (can now sign / register clients)
+   *
+   * admin_puk is a one-time-reveal value only present in the response right
+   * after creation -- fiskaly stops returning it once the TSS leaves
+   * CREATED, so it's used here and only here, never persisted.
+   */
+  async createTss(apiKey: string, apiSecret: string): Promise<{ tssId: string; adminPin: string }> {
+    const tssId = randomUUID();
+    const bootstrapConfig: TseFiskalyConfig = { apiKey, apiSecret, tssId };
+
+    const created = await this.request<FiskalyTss>(bootstrapConfig, 'PUT', `/tss/${tssId}`, {});
+    const adminPuk = created.admin_puk;
+    if (!adminPuk) {
+      throw new Error('fiskaly createTss response did not include admin_puk');
+    }
+
+    await this.request(bootstrapConfig, 'PATCH', `/tss/${tssId}`, { state: 'UNINITIALIZED' });
+
+    // fiskaly rejects admin/PIN operations issued too soon after the
+    // UNINITIALIZED transition -- confirmed empirically against the TEST
+    // environment, not just documentation. 35s is a small margin over the
+    // documented 30s minimum.
+    await sleep(35_000);
+
+    const adminPin = randomAdminPin();
+    await this.request(bootstrapConfig, 'PATCH', `/tss/${tssId}/admin`, {
+      admin_puk: adminPuk,
+      new_admin_pin: adminPin,
+    });
+    await this.request(bootstrapConfig, 'POST', `/tss/${tssId}/admin/auth`, { admin_pin: adminPin });
+    await this.request(bootstrapConfig, 'PATCH', `/tss/${tssId}`, {
+      state: 'INITIALIZED',
+      description: 'openEOS main register',
+    });
+
+    return { tssId, adminPin };
+  }
+
   async ensureClient(config: TseFiskalyConfig, clientId: string): Promise<void> {
     // PUT is idempotent on fiskaly's client resource — safe to call every time.
-    await this.request(config, 'PUT', `/tss/${config.tssId}/client/${clientId}`, {
-      serial_number: clientId,
-    });
+    try {
+      await this.request(config, 'PUT', `/tss/${config.tssId}/client/${clientId}`, {
+        serial_number: clientId,
+      });
+    } catch (error) {
+      // fiskaly's createClient requires an admin-authenticated session.
+      // That session appears to persist well beyond the single request that
+      // established it (confirmed empirically: a client registered in a
+      // completely separate later call, with a fresh access token, still
+      // succeeded) -- so the common path above needs no admin/auth at all,
+      // and this is a fallback for whenever that assumption doesn't hold
+      // (e.g. a new till registering long after the org-wide client did).
+      // Never a substitute for createTss's own bootstrap: without a stored
+      // adminPin (only set by createTss), there's nothing to retry with.
+      if (!config.adminPin) throw error;
+      this.logger.warn(
+        `fiskaly client registration failed, retrying once with admin re-auth: ${(error as Error).message}`,
+      );
+      await this.request(config, 'POST', `/tss/${config.tssId}/admin/auth`, { admin_pin: config.adminPin });
+      await this.request(config, 'PUT', `/tss/${config.tssId}/client/${clientId}`, {
+        serial_number: clientId,
+      });
+    }
   }
 
   async recordTransaction(
@@ -240,6 +311,20 @@ export class FiskalyTseProvider implements TseProvider<TseFiskalyConfig> {
 
 function mapPaymentType(method: string): 'CASH' | 'NON_CASH' {
   return method === 'cash' ? 'CASH' : 'NON_CASH';
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** fiskaly admin PINs: 6 chars, uppercase letters + digits (matches their own examples, e.g. "AB1234"). */
+function randomAdminPin(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I ambiguity
+  let pin = '';
+  for (let i = 0; i < 6; i++) {
+    pin += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return pin;
 }
 
 /**

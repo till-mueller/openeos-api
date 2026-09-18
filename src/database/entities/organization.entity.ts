@@ -85,8 +85,23 @@ export interface OrganizationSettings {
     fiskaly?: {
       apiKey: string;
       apiSecret: string;
-      /** Technical Security System ID, provisioned in the fiskaly dashboard. */
+      /**
+       * Technical Security System ID. Provisioned by openEOS itself
+       * (TseService.createTss) end-to-end from just apiKey/apiSecret --
+       * fiskaly always starts a new TSS in state CREATED, which can't sign
+       * or register clients until walked through UNINITIALIZED to
+       * INITIALIZED, so this is never just "paste an ID from fiskaly's
+       * dashboard".
+       */
       tssId: string;
+      /**
+       * Set once by createTss's own bootstrap, used by ensureClient to
+       * re-authenticate as admin if a later client registration needs it.
+       * fiskaly's one-time admin_puk is deliberately never stored anywhere
+       * (see TseFiskalyConfig's doc comment) -- only this PIN, which
+       * createTss itself sets using that PUK.
+       */
+      adminPin?: string;
     };
     /**
      * Local/offline TSE hardware (USB/SD, e.g. Swissbit) attached to an

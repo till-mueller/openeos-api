@@ -161,6 +161,69 @@ export class TseService {
   }
 
   /**
+   * Provisions a brand-new fiskaly TSS end-to-end from just an API
+   * key/secret and persists the result (tssId + adminPin) onto the org's
+   * TSE settings, overwriting whatever fiskaly config was there before.
+   *
+   * Why this exists at all: a TSS pasted in from anywhere else (fiskaly's
+   * own dashboard, a manual API call) starts in state CREATED and cannot
+   * sign or register clients until it's walked through UNINITIALIZED to
+   * INITIALIZED -- a multi-step, ~35s+ admin-authenticated sequence with no
+   * UI in fiskaly's dashboard for it (confirmed against their docs and
+   * live sandbox testing). Every TSS this app knows about now goes through
+   * this method, so that gap can't recur -- there's no "just paste a
+   * tssId" path anymore.
+   *
+   * This call blocks for the ~35s fiskaly requires between the
+   * UNINITIALIZED transition and the admin/PIN steps -- expected to run
+   * from a "Create TSS" admin action, not a hot path.
+   */
+  async createTss(
+    organizationId: string,
+    userId: string,
+    input: { apiKey: string; apiSecret: string },
+  ): Promise<{ ok: boolean; tssId?: string; message?: string }> {
+    await this.checkMembership(organizationId, userId);
+
+    let tssId: string;
+    let adminPin: string;
+    try {
+      ({ tssId, adminPin } = await this.fiskalyProvider.createTss(input.apiKey, input.apiSecret));
+    } catch (error) {
+      this.logger.error(`TSS creation failed for org ${organizationId}: ${(error as Error).message}`);
+      return { ok: false, message: (error as Error).message };
+    }
+
+    const organization = await this.organizationRepository.findOne({ where: { id: organizationId } });
+    if (!organization) {
+      return { ok: false, message: 'Organisation nicht gefunden' };
+    }
+    organization.settings = {
+      ...organization.settings,
+      tse: {
+        enabled: true,
+        provider: 'fiskaly',
+        fiskaly: { apiKey: input.apiKey, apiSecret: input.apiSecret, tssId, adminPin },
+      },
+    };
+    await this.organizationRepository.save(organization);
+
+    try {
+      await this.fiskalyProvider.ensureClient({ apiKey: input.apiKey, apiSecret: input.apiSecret, tssId, adminPin }, organizationId);
+    } catch (error) {
+      // The TSS itself is fully provisioned and saved at this point -- only
+      // the org-wide default client's eager registration failed. Same
+      // fallback as everywhere else: the lazy per-payment ensureClient call
+      // still covers it, so this isn't fatal to the overall operation.
+      this.logger.warn(`Default client registration failed for org ${organizationId}: ${(error as Error).message}`);
+      return { ok: true, tssId, message: `TSS erstellt, aber Client-Registrierung fehlgeschlagen: ${(error as Error).message}` };
+    }
+
+    this.logger.log(`TSS created and initialized for org ${organizationId}: ${tssId}`);
+    return { ok: true, tssId };
+  }
+
+  /**
    * Export one client's signed transaction log for a date range — the
    * handover artifact for the weekend-rental tenant separation model (see
    * the local-agent architecture sketch). Throws when TSE isn't configured

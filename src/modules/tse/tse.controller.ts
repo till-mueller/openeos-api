@@ -5,6 +5,7 @@ import {
   Param,
   ParseUUIDPipe,
   Query,
+  Body,
   Res,
   HttpCode,
   HttpStatus,
@@ -43,6 +44,25 @@ export class TseController {
     @CurrentUser() user: User,
   ) {
     return this.tseService.registerClient(organizationId, user.id);
+  }
+
+  /**
+   * Creates and fully initializes a brand-new fiskaly TSS from just an API
+   * key/secret, and saves the result as this org's TSE config. This is the
+   * only supported way to get a fiskaly TSS into this app -- there's no
+   * "paste in a tssId you made elsewhere" path, since a TSS from anywhere
+   * else starts in state CREATED and can't sign or register clients until
+   * walked through the same lifecycle this does automatically. Blocks for
+   * ~35s (fiskaly's required settle time) -- an admin action, not a hot path.
+   */
+  @Post('fiskaly/create')
+  @HttpCode(HttpStatus.OK)
+  createFiskalyTss(
+    @Param('organizationId', ParseUUIDPipe) organizationId: string,
+    @Body() body: { apiKey: string; apiSecret: string },
+    @CurrentUser() user: User,
+  ) {
+    return this.tseService.createTss(organizationId, user.id, body);
   }
 
   /** All TSE client ids this org has signed under — for picking which one to export. */
