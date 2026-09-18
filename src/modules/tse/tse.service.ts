@@ -224,16 +224,18 @@ export class TseService {
   }
 
   /**
-   * Export one client's signed transaction log for a date range — the
-   * handover artifact for the weekend-rental tenant separation model (see
-   * the local-agent architecture sketch). Throws when TSE isn't configured
-   * or the provider can't export (surfaced to the caller as a 4xx/5xx).
+   * Export signed transaction log for a date range — the handover artifact
+   * for the weekend-rental tenant separation model. Throws when TSE isn't
+   * configured or the provider can't export (surfaced to the caller as a
+   * 4xx/5xx).
    *
-   * `clientId` defaults to the org-wide client (online-shop orders); pass a
-   * specific till's client id (see `listClientIds`) to export that till's
-   * own transactions instead. Each org has as many clients on the shared
-   * stick as it has tills that signed at least one transaction — a full
-   * handover export means calling this once per id from `listClientIds`.
+   * Per-client scoping only actually holds for the local provider (its own
+   * agent genuinely filters by clientId/date range). fiskaly's real export
+   * API has no per-client or date-range filter at all -- it always returns
+   * the whole TSS's log (see FiskalyTseProvider.exportData's own doc
+   * comment for how this was confirmed). `clientId` is still validated
+   * against this org's known client ids below (a real access-control
+   * check), but on fiskaly it does not narrow what comes back.
    */
   async exportData(
     organizationId: string,

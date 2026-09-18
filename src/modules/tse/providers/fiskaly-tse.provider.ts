@@ -254,47 +254,49 @@ export class FiskalyTseProvider implements TseProvider<TseFiskalyConfig> {
   }
 
   /**
-   * TR-03153 TAR export for one client's transactions in a date range — the
-   * handover artifact for the rental-tenant separation model. fiskaly exports
-   * are async: create an export job, poll until DONE, download the archive.
-   * Like the rest of this provider, verify the exact job schema against a
-   * provisioned TSS — this follows fiskaly's documented export flow but is
-   * untested against live credentials.
+   * TR-03153 TAR export of the TSS's entire signed log. Corrected against
+   * fiskaly's actual docs (the previous version guessed at a plausible-
+   * looking but entirely wrong shape -- POST .../exports instead of PUT
+   * .../export/{export_id}, states DONE/FAILED instead of the real
+   * PENDING/WORKING/COMPLETED/CANCELLED, and a client_id/time_start/time_end
+   * body that fiskaly's export operation doesn't accept at all -- confirmed
+   * live, this always 404'd).
+   *
+   * Important: fiskaly's export is scoped to the whole TSS, not to a single
+   * client/till and not to a date range -- it can only be narrowed by
+   * signature-counter range, which this doesn't attempt to map dates to.
+   * `input.clientId`/`periodStart`/`periodEnd` are used only for the
+   * downloaded filename (see TseService.exportData), not as an actual
+   * filter -- every export contains every client's transactions on this
+   * TSS. There's no fiskaly-side way to hand a specific weekend renter only
+   * their own slice of the log.
    */
   async exportData(config: TseFiskalyConfig, input: TseExportInput): Promise<TseExportResult> {
-    const created = await this.request<{ _id: string; state: string }>(
-      config,
-      'POST',
-      `/tss/${config.tssId}/exports`,
-      {
-        client_id: input.clientId,
-        // fiskaly export job time filters
-        time_start: input.periodStart.toISOString(),
-        time_end: input.periodEnd.toISOString(),
-      },
-    );
+    const exportId = randomUUID();
+    await this.request(config, 'PUT', `/tss/${config.tssId}/export/${exportId}`, {});
 
-    const exportId = created._id;
-    const deadline = Date.now() + 2 * 60 * 1000; // exports can take a while on large ranges
-    let state = created.state;
-    while (state !== 'DONE' && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 3000));
+    const deadline = Date.now() + 2 * 60 * 1000; // exports can take a while on large logs
+    let state = 'PENDING';
+    while (state !== 'COMPLETED' && Date.now() < deadline) {
       const status = await this.request<{ state: string }>(
         config,
         'GET',
-        `/tss/${config.tssId}/exports/${exportId}`,
+        `/tss/${config.tssId}/export/${exportId}`,
       );
       state = status.state;
-      if (state === 'FAILED') {
-        throw new Error(`fiskaly export ${exportId} failed`);
+      if (state === 'CANCELLED') {
+        throw new Error(`fiskaly export ${exportId} was cancelled`);
+      }
+      if (state !== 'COMPLETED') {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
       }
     }
-    if (state !== 'DONE') {
+    if (state !== 'COMPLETED') {
       throw new Error(`fiskaly export ${exportId} timed out (state: ${state})`);
     }
 
     const token = await this.getAccessToken(config);
-    const res = await fetch(`${this.apiBase}/tss/${config.tssId}/exports/${exportId}/download`, {
+    const res = await fetch(`${this.apiBase}/tss/${config.tssId}/export/${exportId}/tar`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) {
@@ -304,7 +306,11 @@ export class FiskalyTseProvider implements TseProvider<TseFiskalyConfig> {
 
     return {
       data,
-      filename: `tse-export-${input.clientId}-${input.periodStart.toISOString().slice(0, 10)}.tar`,
+      // Not "tse-export-{clientId}-..." -- the file contains every client's
+      // transactions on this TSS, not just input.clientId's (see this
+      // method's doc comment). Naming it as if it were scoped would mislead
+      // whoever receives it into thinking it's their own slice of the log.
+      filename: `tse-export-full-${input.periodStart.toISOString().slice(0, 10)}.tar`,
     };
   }
 }
