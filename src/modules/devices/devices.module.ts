@@ -28,6 +28,7 @@ import { PrintJobsModule } from '../print-jobs/print-jobs.module';
 import { OrdersModule } from '../orders/orders.module';
 import { DiscountVouchersModule } from '../discount-vouchers';
 import { PfandTypesModule } from '../pfand-types';
+import { TseModule } from '../tse/tse.module';
 
 @Module({
   imports: [
@@ -53,6 +54,7 @@ import { PfandTypesModule } from '../pfand-types';
     SumUpModule,
     DiscountVouchersModule,
     PfandTypesModule,
+    TseModule,
   ],
   controllers: [
     DevicesController,

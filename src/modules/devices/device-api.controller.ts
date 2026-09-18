@@ -67,6 +67,7 @@ import { DiscountVouchersService } from '../discount-vouchers/discount-vouchers.
 import { PfandTypesService } from '../pfand-types/pfand-types.service';
 import { PfandReturnsService } from '../pfand-types/pfand-returns.service';
 import { CreatePfandReturnDto } from '../pfand-types/dto';
+import { TseService } from '../tse/tse.service';
 import { isPfandChargedForFulfillment } from '../../common/utils/pfand-policy';
 import { assertTestEventOrderLimitNotReached } from '../../common/utils/test-event-order-limit.util';
 
@@ -130,7 +131,33 @@ export class DeviceApiController {
     private readonly pfandTypesService: PfandTypesService,
     private readonly pfandReturnsService: PfandReturnsService,
     private readonly configService: ConfigService,
+    private readonly tseService: TseService,
   ) {}
+
+  /**
+   * Sign the captured payment through the org's TSE and persist the result.
+   * Mirrors PaymentsService.signPaymentWithTse -- device-api has its own
+   * payment-creation path (POS register payments) that never called this,
+   * so every real sale skipped TSE signing entirely with no error anywhere
+   * (recordTransaction only returns null/no-ops when TSE isn't configured;
+   * it doesn't throw). Best-effort: never throws -- a TSE outage must not
+   * block the sale.
+   */
+  private async signPaymentWithTse(order: Order, payment: Payment): Promise<void> {
+    try {
+      const tseData = await this.tseService.recordTransaction(
+        order.organizationId,
+        order.createdByDeviceId ?? null,
+        { amount: Number(payment.amount), paymentMethod: payment.paymentMethod },
+      );
+      if (tseData) {
+        payment.tseData = tseData;
+        await this.paymentRepository.save(payment);
+      }
+    } catch (error) {
+      this.logger.error(`TSE signing failed for device payment ${payment.id}: ${(error as Error).message}`);
+    }
+  }
 
   @Get('organization')
   @ApiOperation({ summary: 'Get organization info and settings for device' })
@@ -681,6 +708,10 @@ export class DeviceApiController {
       `Device payment created: ${payment.id} for order ${order.orderNumber}`,
     );
 
+    // Sign through the TSE before printing, so the receipt can carry the
+    // signature/QR code (see OrderPrintService.handlePaymentReceived below).
+    await this.signPaymentWithTse(order, payment);
+
     // NB: the cash drawer is opened by the POS as soon as the cash payment
     // starts (POST /device-api/cash-drawer/open when the cash modal opens), so
     // the cashier can make change while entering the amount. We deliberately do
@@ -824,6 +855,10 @@ export class DeviceApiController {
     this.logger.log(
       `Device split payment created: ${payment.id} for order ${order.orderNumber}`,
     );
+
+    // Sign through the TSE before printing, so the receipt can carry the
+    // signature/QR code.
+    await this.signPaymentWithTse(order, payment);
 
     // Auto-open cash drawer on cash payment
     if (createDto.paymentMethod === PaymentMethod.CASH) {
