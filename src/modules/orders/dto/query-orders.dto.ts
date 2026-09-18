@@ -65,4 +65,9 @@ export class QueryOrdersDto extends PaginationDto {
   // transform runs, in which case `value === 'true'` would wrongly be false.
   @Transform(({ value }) => value === true || value === 'true')
   includeItems?: boolean;
+
+  @ApiPropertyOptional({ example: true, description: 'Zahlungen (inkl. TSE-Signaturstatus) einschließen' })
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  includePayments?: boolean;
 }

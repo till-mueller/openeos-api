@@ -249,6 +249,10 @@ export class OrdersService {
       queryBuilder.leftJoinAndSelect('ord.items', 'items');
     }
 
+    if (query.includePayments) {
+      queryBuilder.leftJoinAndSelect('ord.payments', 'payments');
+    }
+
     queryBuilder.orderBy('ord.createdAt', 'DESC').skip(skip).take(limit);
 
     const [items, total] = await queryBuilder.getManyAndCount();
@@ -320,7 +324,7 @@ export class OrdersService {
 
     const order = await this.orderRepository.findOne({
       where: { id: orderId, organizationId },
-      relations: ['items', 'items.product', 'createdByUser', 'event'],
+      relations: ['items', 'items.product', 'createdByUser', 'event', 'payments'],
     });
 
     if (!order) {
