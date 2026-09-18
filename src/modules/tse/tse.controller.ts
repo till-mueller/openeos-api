@@ -31,6 +31,20 @@ export class TseController {
     return this.tseService.testConnection(organizationId, user.id);
   }
 
+  /**
+   * Registers the org's default TSE client. Unlike test-connection (a pure
+   * read-only health check), this is a real mutation against the provider
+   * -- deliberately its own endpoint so "test" never has side effects.
+   */
+  @Post('register-client')
+  @HttpCode(HttpStatus.OK)
+  registerClient(
+    @Param('organizationId', ParseUUIDPipe) organizationId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.tseService.registerClient(organizationId, user.id);
+  }
+
   /** All TSE client ids this org has signed under — for picking which one to export. */
   @Get('clients')
   listClients(

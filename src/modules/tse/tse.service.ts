@@ -116,6 +116,51 @@ export class TseService {
   }
 
   /**
+   * Eagerly register the org's default TSE client (see resolveClientId's
+   * organizationId fallback for deviceId === null) right when settings are
+   * saved, instead of waiting for the first real payment.
+   *
+   * Why this exists: fiskaly only allows registering a new client while a
+   * TSS is `UNINITIALIZED`/`INITIALIZED` -- a sandbox TSS observed
+   * transitioning to `CREATED` (locked, no new clients ever) within minutes
+   * of creation, well before any sale happened. The old lazy-only path
+   * (ensureClient inside recordTransaction, on the first payment) lost that
+   * race every time in practice.
+   *
+   * This does NOT replace that lazy call -- per-device clients (a specific
+   * till's own clientId, not the org-wide fallback) still only get
+   * registered on their own first transaction, and always will: a save
+   * here can't pre-register a till that doesn't exist yet. Treat this as
+   * closing the most common race (initial setup, before any device has
+   * signed anything), not a guarantee every future client registers cleanly.
+   *
+   * Deliberately not folded into testConnection: that one is a read-only
+   * health check (GET only) and callers reasonably expect "test" to be
+   * side-effect-free. Registration is a real mutation (fiskaly's client
+   * resource), so it belongs behind an explicit, separately-named action --
+   * callers triggered by a "Save" click already expect persistence-adjacent
+   * side effects; "Test connection" should not silently register anything.
+   */
+  async registerClient(organizationId: string, userId: string): Promise<{ ok: boolean; message?: string }> {
+    await this.checkMembership(organizationId, userId);
+    const organization = await this.organizationRepository.findOne({
+      where: { id: organizationId },
+      select: ['id', 'settings'],
+    });
+    const resolved = this.resolveProvider(organization?.settings?.tse, organizationId);
+    if (!resolved) {
+      return { ok: false, message: 'TSE ist für diese Organisation nicht konfiguriert' };
+    }
+    try {
+      await resolved.provider.ensureClient(resolved.config, organizationId);
+      return { ok: true };
+    } catch (error) {
+      this.logger.warn(`fiskaly client registration failed for org ${organizationId}: ${(error as Error).message}`);
+      return { ok: false, message: (error as Error).message };
+    }
+  }
+
+  /**
    * Export one client's signed transaction log for a date range — the
    * handover artifact for the weekend-rental tenant separation model (see
    * the local-agent architecture sketch). Throws when TSE isn't configured
