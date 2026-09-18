@@ -260,13 +260,13 @@ export class AuthController {
     // Clear refresh token cookie
     response.clearCookie('refreshToken', {
       httpOnly: true,
-      secure: this.configService.get('nodeEnv') === 'production',
+      secure: this.isSecureCookies(),
       sameSite: 'lax',
       path: '/',
     });
     response.clearCookie('accessToken', {
       httpOnly: true,
-      secure: this.configService.get('nodeEnv') === 'production',
+      secure: this.isSecureCookies(),
       sameSite: 'lax',
       path: '/',
     });
@@ -502,13 +502,28 @@ export class AuthController {
     return { message: 'Verifizierungscode wurde per E-Mail gesendet' };
   }
 
+  // NODE_ENV=production does not imply the app is actually served over
+  // HTTPS -- self-hosted deployments can be production and plain HTTP at
+  // the same time (e.g. Tailscale-only, no reverse-proxy TLS). A cookie's
+  // Secure attribute is enforced by the browser based on the connection's
+  // actual scheme, not on server-side environment labels: browsers silently
+  // drop a Secure cookie set over a plain-HTTP response, which breaks login
+  // outright (server sets the cookie, browser never stores it, every
+  // following request comes back 401) with no error surfaced anywhere.
+  // APP_URL already reflects the deployment's real scheme (see the
+  // reset-password link construction above), so derive secure from that
+  // instead of nodeEnv.
+  private isSecureCookies(): boolean {
+    const appUrl = this.configService.get<string>('APP_URL') || '';
+    return appUrl.startsWith('https://');
+  }
+
   private setRefreshTokenCookie(response: Response, token: string): void {
-    const isProduction = this.configService.get('nodeEnv') === 'production';
     const maxAge = 7 * 24 * 60 * 60 * 1000; // 7 days
 
     response.cookie('refreshToken', token, {
       httpOnly: true,
-      secure: isProduction,
+      secure: this.isSecureCookies(),
       sameSite: 'lax',
       path: '/',
       maxAge,
@@ -516,12 +531,11 @@ export class AuthController {
   }
 
   private setAccessTokenCookie(response: Response, token: string): void {
-    const isProduction = this.configService.get('nodeEnv') === 'production';
     const expiration = this.configService.get<string>('jwt.accessTokenExpiration') || '30m';
 
     response.cookie('accessToken', token, {
       httpOnly: true,
-      secure: isProduction,
+      secure: this.isSecureCookies(),
       sameSite: 'lax',
       path: '/',
       maxAge: parseDurationToMs(expiration),
