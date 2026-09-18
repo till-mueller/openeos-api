@@ -8,6 +8,7 @@ export interface SendEmailOptions {
   subject: string;
   html: string;
   text?: string;
+  attachments?: Array<{ filename: string; content: Buffer; contentType?: string }>;
 }
 
 @Injectable()
@@ -84,6 +85,7 @@ export class EmailService {
         subject: options.subject,
         html: options.html,
         text: options.text || this.stripHtml(options.html),
+        attachments: options.attachments,
       });
 
       this.logger.log(`Email sent to ${options.to}: ${info.messageId}`);
@@ -127,6 +129,27 @@ export class EmailService {
     `);
 
     return this.sendEmail({ to: options.to, subject, html });
+  }
+
+  async sendReceiptEmail(options: {
+    to: string;
+    organizationName: string;
+    orderNumber: string;
+    pdf: Buffer;
+    filename: string;
+  }): Promise<boolean> {
+    const subject = `Ihr Beleg von ${options.organizationName} (${options.orderNumber})`;
+    const html = this.getBaseTemplate(`
+      <h1>Vielen Dank für Ihren Einkauf!</h1>
+      <p>Im Anhang finden Sie Ihren Beleg für die Bestellung ${options.orderNumber} bei ${options.organizationName}.</p>
+    `);
+
+    return this.sendEmail({
+      to: options.to,
+      subject,
+      html,
+      attachments: [{ filename: options.filename, content: options.pdf, contentType: 'application/pdf' }],
+    });
   }
 
   async sendPasswordResetEmail(options: {

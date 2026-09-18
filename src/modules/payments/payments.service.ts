@@ -14,6 +14,7 @@ import {
   OrderItemPayment,
   User,
   UserOrganization,
+  Organization,
 } from '../../database/entities';
 import {
   PaymentMethod,
@@ -27,6 +28,8 @@ import { PaginatedResult, createPaginatedResult } from '../../common/dto/paginat
 import { CreatePaymentDto, SplitPaymentDto, QueryPaymentsDto } from './dto';
 import { OrderPrintService } from '../print-jobs/order-print.service';
 import { TseService } from '../tse/tse.service';
+import { ReceiptPdfService } from './receipt-pdf.service';
+import { EmailService } from '../email/email.service';
 
 @Injectable()
 export class PaymentsService {
@@ -43,9 +46,82 @@ export class PaymentsService {
     private readonly orderItemPaymentRepository: Repository<OrderItemPayment>,
     @InjectRepository(UserOrganization)
     private readonly userOrganizationRepository: Repository<UserOrganization>,
+    @InjectRepository(Organization)
+    private readonly organizationRepository: Repository<Organization>,
     private readonly orderPrintService: OrderPrintService,
     private readonly tseService: TseService,
+    private readonly receiptPdfService: ReceiptPdfService,
+    private readonly emailService: EmailService,
   ) {}
+
+  /**
+   * Loads a payment (with its order + items) for receipt rendering. Works
+   * regardless of the org's receipt-printing setting or whether any printer
+   * is configured at all -- printing and viewing/emailing a receipt are
+   * deliberately independent from here on. An admin can always see what a
+   * customer was (or wasn't) handed.
+   */
+  private async getPaymentForReceipt(
+    organizationId: string,
+    paymentId: string,
+    user: User,
+  ): Promise<{ payment: Payment; order: Order; organization: Organization | null }> {
+    await this.checkMembership(organizationId, user.id);
+
+    const payment = await this.paymentRepository.findOne({
+      where: { id: paymentId },
+      relations: ['order', 'order.items'],
+    });
+    if (!payment || payment.order.organizationId !== organizationId) {
+      throw new NotFoundException({
+        code: ErrorCodes.NOT_FOUND,
+        message: 'Zahlung nicht gefunden',
+      });
+    }
+
+    const organization = await this.organizationRepository.findOne({
+      where: { id: organizationId },
+    });
+
+    return { payment, order: payment.order, organization };
+  }
+
+  async getReceiptPdf(
+    organizationId: string,
+    paymentId: string,
+    user: User,
+  ): Promise<{ data: Buffer; filename: string }> {
+    const { payment, order, organization } = await this.getPaymentForReceipt(organizationId, paymentId, user);
+    const data = await this.receiptPdfService.generateReceiptPdf(payment, order, organization);
+    return { data, filename: `beleg-${order.orderNumber}.pdf` };
+  }
+
+  /**
+   * Ad-hoc email, not tied to any stored customer address -- Order has no
+   * customerEmail field, and this deliberately doesn't add one. Whoever is
+   * sending it (staff/admin) types the address at send time.
+   */
+  async emailReceipt(
+    organizationId: string,
+    paymentId: string,
+    email: string,
+    user: User,
+  ): Promise<{ ok: boolean; message?: string }> {
+    const { payment, order, organization } = await this.getPaymentForReceipt(organizationId, paymentId, user);
+    const pdf = await this.receiptPdfService.generateReceiptPdf(payment, order, organization);
+    const sent = await this.emailService.sendReceiptEmail({
+      to: email,
+      organizationName: organization?.name || 'OpenEOS',
+      orderNumber: order.orderNumber,
+      pdf,
+      filename: `beleg-${order.orderNumber}.pdf`,
+    });
+    if (!sent) {
+      return { ok: false, message: 'E-Mail-Versand fehlgeschlagen' };
+    }
+    this.logger.log(`Receipt for order ${order.orderNumber} emailed to ${email} by user ${user.id}`);
+    return { ok: true };
+  }
 
   /**
    * Sign the captured payment through the org's TSE and persist the result.
