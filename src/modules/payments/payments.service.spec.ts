@@ -8,8 +8,11 @@ describe('PaymentsService — TSE hook in create()', () => {
   let orderItemRepository: { save: jest.Mock };
   let orderItemPaymentRepository: {};
   let userOrganizationRepository: { findOne: jest.Mock };
+  let organizationRepository: { findOne: jest.Mock };
   let orderPrintService: { handlePaymentReceived: jest.Mock };
   let tseService: { recordTransaction: jest.Mock };
+  let receiptPdfService: { generateReceiptPdf: jest.Mock };
+  let emailService: { sendReceiptEmail: jest.Mock };
   let service: PaymentsService;
 
   const ORG_ID = 'org-1';
@@ -43,8 +46,11 @@ describe('PaymentsService — TSE hook in create()', () => {
     orderItemRepository = { save: jest.fn() };
     orderItemPaymentRepository = {};
     userOrganizationRepository = { findOne: jest.fn().mockResolvedValue({ id: 'membership-1' }) };
+    organizationRepository = { findOne: jest.fn().mockResolvedValue({ id: ORG_ID, name: 'Org', settings: {} }) };
     orderPrintService = { handlePaymentReceived: jest.fn().mockResolvedValue(undefined) };
     tseService = { recordTransaction: jest.fn() };
+    receiptPdfService = { generateReceiptPdf: jest.fn() };
+    emailService = { sendReceiptEmail: jest.fn() };
 
     service = new PaymentsService(
       paymentRepository as any,
@@ -52,8 +58,11 @@ describe('PaymentsService — TSE hook in create()', () => {
       orderItemRepository as any,
       orderItemPaymentRepository as any,
       userOrganizationRepository as any,
+      organizationRepository as any,
       orderPrintService as any,
       tseService as any,
+      receiptPdfService as any,
+      emailService as any,
     );
   });
 

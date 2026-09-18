@@ -178,33 +178,46 @@ describe('FiskalyTseProvider', () => {
   });
 
   describe('exportData', () => {
-    it('creates an export job, polls until DONE, then downloads it', async () => {
+    // Corrected against fiskaly's real API (see FiskalyTseProvider.exportData's
+    // doc comment): PUT .../export/{export_id} (client-generated UUID) to
+    // create, states PENDING/WORKING/COMPLETED/CANCELLED (not DONE/FAILED),
+    // download at .../export/{export_id}/tar. Also: no per-client or
+    // date-range filter exists at the fiskaly layer, so clientId/periodStart/
+    // periodEnd only ever affect the downloaded filename, not what's fetched.
+    it('creates an export job, polls until COMPLETED, then downloads the tar', async () => {
       mockAuth();
-      fetchMock.mockResolvedValueOnce(jsonResponse({ _id: 'exp-1', state: 'RUNNING' })); // create
-      fetchMock.mockResolvedValueOnce(jsonResponse({ state: 'DONE' })); // poll
+      fetchMock.mockResolvedValueOnce(jsonResponse({})); // PUT create
+      fetchMock.mockResolvedValueOnce(jsonResponse({ state: 'COMPLETED' })); // GET poll
       fetchMock.mockResolvedValueOnce({
         ok: true,
         status: 200,
         arrayBuffer: async () => new TextEncoder().encode('tar-bytes').buffer,
-      }); // download
+      }); // GET download
 
-      const resultPromise = provider.exportData(config, {
+      const result = await provider.exportData(config, {
         organizationId: 'org-1',
         clientId: 'client-1',
         periodStart: new Date('2026-08-21'),
         periodEnd: new Date('2026-08-23'),
       });
 
-      const result = await resultPromise;
-
       expect(Buffer.from(result.data).toString()).toBe('tar-bytes');
-      expect(result.filename).toContain('client-1');
+      // Not clientId -- fiskaly's export is TSS-wide, naming it as if it
+      // were scoped to one client would be misleading.
+      expect(result.filename).toBe('tse-export-full-2026-08-21.tar');
+
+      const [createUrl, createInit] = fetchMock.mock.calls[1];
+      expect(createUrl).toMatch(/\/tss\/tss-1\/export\/[0-9a-f-]{36}$/);
+      expect(createInit).toEqual(expect.objectContaining({ method: 'PUT' }));
+
+      const [downloadUrl] = fetchMock.mock.calls[3];
+      expect(downloadUrl).toMatch(/\/tss\/tss-1\/export\/[0-9a-f-]{36}\/tar$/);
     }, 15000);
 
-    it('throws when the export job fails', async () => {
+    it('throws when the export job is cancelled', async () => {
       mockAuth();
-      fetchMock.mockResolvedValueOnce(jsonResponse({ _id: 'exp-1', state: 'RUNNING' }));
-      fetchMock.mockResolvedValueOnce(jsonResponse({ state: 'FAILED' }));
+      fetchMock.mockResolvedValueOnce(jsonResponse({}));
+      fetchMock.mockResolvedValueOnce(jsonResponse({ state: 'CANCELLED' }));
 
       await expect(
         provider.exportData(config, {
@@ -213,7 +226,7 @@ describe('FiskalyTseProvider', () => {
           periodStart: new Date('2026-08-21'),
           periodEnd: new Date('2026-08-23'),
         }),
-      ).rejects.toThrow(/failed/);
+      ).rejects.toThrow(/cancelled/);
     }, 15000);
   });
 });
