@@ -181,9 +181,12 @@ describe('FiskalyTseProvider', () => {
     // Corrected against fiskaly's real API (see FiskalyTseProvider.exportData's
     // doc comment): PUT .../export/{export_id} (client-generated UUID) to
     // create, states PENDING/WORKING/COMPLETED/CANCELLED (not DONE/FAILED),
-    // download at .../export/{export_id}/tar. Also: no per-client or
-    // date-range filter exists at the fiskaly layer, so clientId/periodStart/
-    // periodEnd only ever affect the downloaded filename, not what's fetched.
+    // download at .../export/{export_id}/file -- NOT /tar, which is what
+    // fiskaly's own docs say but 404s against a real completed export
+    // (confirmed by direct testing, not just re-reading the docs). Also: no
+    // per-client or date-range filter exists at the fiskaly layer, so
+    // clientId/periodStart/periodEnd only ever affect the downloaded
+    // filename, not what's fetched.
     it('creates an export job, polls until COMPLETED, then downloads the tar', async () => {
       mockAuth();
       fetchMock.mockResolvedValueOnce(jsonResponse({})); // PUT create
@@ -211,7 +214,7 @@ describe('FiskalyTseProvider', () => {
       expect(createInit).toEqual(expect.objectContaining({ method: 'PUT' }));
 
       const [downloadUrl] = fetchMock.mock.calls[3];
-      expect(downloadUrl).toMatch(/\/tss\/tss-1\/export\/[0-9a-f-]{36}\/tar$/);
+      expect(downloadUrl).toMatch(/\/tss\/tss-1\/export\/[0-9a-f-]{36}\/file$/);
     }, 15000);
 
     it('throws when the export job is cancelled', async () => {

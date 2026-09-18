@@ -254,13 +254,20 @@ export class FiskalyTseProvider implements TseProvider<TseFiskalyConfig> {
   }
 
   /**
-   * TR-03153 TAR export of the TSS's entire signed log. Corrected against
-   * fiskaly's actual docs (the previous version guessed at a plausible-
-   * looking but entirely wrong shape -- POST .../exports instead of PUT
-   * .../export/{export_id}, states DONE/FAILED instead of the real
-   * PENDING/WORKING/COMPLETED/CANCELLED, and a client_id/time_start/time_end
-   * body that fiskaly's export operation doesn't accept at all -- confirmed
-   * live, this always 404'd).
+   * TR-03153 TAR export of the TSS's entire signed log.
+   *
+   * The create/poll shape (PUT .../export/{export_id}, states PENDING/
+   * WORKING/COMPLETED/CANCELLED) was corrected in an earlier pass -- the
+   * download path was NOT, and stayed wrong through that entire pass too:
+   * fiskaly's own published docs (checked twice, independently) say the
+   * download operation is GET .../export/{export_id}/tar, but that 404s
+   * even against a genuinely COMPLETED export on a live TSS -- confirmed by
+   * direct testing, not by re-reading the docs a third time. The endpoint
+   * that actually works, found by testing plausible alternatives against
+   * the same live export, is GET .../export/{export_id}/file. Content-
+   * negotiating via an Accept header on the status URL instead (also
+   * tested) returns 200 but with the JSON status body, not the archive --
+   * a false positive if only the status code were checked.
    *
    * Important: fiskaly's export is scoped to the whole TSS, not to a single
    * client/till and not to a date range -- it can only be narrowed by
@@ -296,7 +303,7 @@ export class FiskalyTseProvider implements TseProvider<TseFiskalyConfig> {
     }
 
     const token = await this.getAccessToken(config);
-    const res = await fetch(`${this.apiBase}/tss/${config.tssId}/export/${exportId}/tar`, {
+    const res = await fetch(`${this.apiBase}/tss/${config.tssId}/export/${exportId}/file`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) {
