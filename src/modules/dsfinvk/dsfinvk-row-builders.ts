@@ -198,6 +198,17 @@ const ZAHLART_NAME_BY_METHOD: Record<PaymentMethod, string> = {
   [PaymentMethod.APPLE_PAY]: 'Apple Pay',
 };
 
+/** The ZAHLART_TYP/ZAHLART_NAME pair for one PaymentMethod -- used directly for datapayment.csv's per-Vorgang rows. */
+export function zahlartFor(method: PaymentMethod): {
+  typ: string;
+  name: string;
+} {
+  return {
+    typ: ZAHLART_TYP_BY_METHOD[method],
+    name: ZAHLART_NAME_BY_METHOD[method],
+  };
+}
+
 /**
  * payment.csv: one row per ZAHLART_TYP actually used in the period, summed.
  * Several PaymentMethods can collapse onto the same ZAHLART_TYP (e.g. CARD

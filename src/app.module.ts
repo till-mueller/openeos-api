@@ -51,6 +51,7 @@ import { PlatformSettingsModule } from './modules/platform-settings';
 import { SupportModule } from './modules/support';
 import { ContactModule } from './modules/contact';
 import { TseModule } from './modules/tse';
+import { DsfinvkModule } from './modules/dsfinvk';
 
 @Module({
   imports: [
@@ -153,6 +154,7 @@ import { TseModule } from './modules/tse';
     SupportModule,
     TseModule,
     ContactModule,
+    DsfinvkModule,
   ],
   controllers: [],
   providers: [
