@@ -1,6 +1,9 @@
 import { OrganizationSettings } from '../../database/entities/organization.entity';
 import { DeviceSettings } from '../../database/entities/device.entity';
-import { TseTransactionData } from '../../database/entities/payment.entity';
+import {
+  PaymentMethod,
+  TseTransactionData,
+} from '../../database/entities/payment.entity';
 import {
   TAX_RATES_BY_COUNTRY,
   TAX_RATE_EXEMPT,
@@ -119,6 +122,88 @@ export function buildVatRows(
       UST_BESCHR: beschr,
     };
   });
+}
+
+/**
+ * Anhang D ZAHLART_TYP -- exact enum verbatim from the spec PDF: Bar, Unbar,
+ * Keine, ECKarte, Kreditkarte, ElZahlungsdienstleister, Guthabenkarte.
+ *
+ * openEOS's PaymentMethod doesn't record whether a card was debit (EC) or
+ * credit -- SumUp's reader accepts both without exposing which was used --
+ * so CARD/SUMUP_TERMINAL map to "Unbar", which Anhang D explicitly names as
+ * the correct fallback "fuer Kassen, die die unbaren Zahlarten nicht weiter
+ * differenzieren koennen". The digital-wallet/online methods map to
+ * ElZahlungsdienstleister. Guthabenkarte is unused -- openEOS has no
+ * stored-value/voucher-card feature. NOT independently verified against a
+ * Steuerberater -- flag alongside the UST_SCHLUESSEL mappings for Phase 3.
+ */
+const ZAHLART_TYP_BY_METHOD: Record<PaymentMethod, string> = {
+  [PaymentMethod.CASH]: 'Bar',
+  [PaymentMethod.CARD]: 'Unbar',
+  [PaymentMethod.SUMUP_TERMINAL]: 'Unbar',
+  [PaymentMethod.SUMUP_ONLINE]: 'ElZahlungsdienstleister',
+  [PaymentMethod.PAYPAL]: 'ElZahlungsdienstleister',
+  [PaymentMethod.GOOGLE_PAY]: 'ElZahlungsdienstleister',
+  [PaymentMethod.APPLE_PAY]: 'ElZahlungsdienstleister',
+};
+
+const ZAHLART_NAME_BY_METHOD: Record<PaymentMethod, string> = {
+  [PaymentMethod.CASH]: 'Bar',
+  [PaymentMethod.CARD]: 'Karte',
+  [PaymentMethod.SUMUP_TERMINAL]: 'SumUp Kartenterminal',
+  [PaymentMethod.SUMUP_ONLINE]: 'SumUp Online',
+  [PaymentMethod.PAYPAL]: 'PayPal',
+  [PaymentMethod.GOOGLE_PAY]: 'Google Pay',
+  [PaymentMethod.APPLE_PAY]: 'Apple Pay',
+};
+
+/**
+ * payment.csv: one row per ZAHLART_TYP actually used in the period, summed.
+ * Several PaymentMethods can collapse onto the same ZAHLART_TYP (e.g. CARD
+ * and SUMUP_TERMINAL both -> "Unbar") -- those are summed together into one
+ * row per the spec's grouping, not kept as separate ZAHLART_NAME rows,
+ * since ZAHLART_TYP is what the spec actually groups by.
+ */
+export function buildPaymentRows(
+  ctx: ClosingContext,
+  payments: { paymentMethod: PaymentMethod; amount: number }[],
+): DsfinvkRow[] {
+  const totals = new Map<string, number>();
+  for (const p of payments) {
+    const typ = ZAHLART_TYP_BY_METHOD[p.paymentMethod];
+    totals.set(typ, (totals.get(typ) ?? 0) + p.amount);
+  }
+  const nameByTyp = new Map<string, string>();
+  for (const p of payments) {
+    nameByTyp.set(
+      ZAHLART_TYP_BY_METHOD[p.paymentMethod],
+      ZAHLART_NAME_BY_METHOD[p.paymentMethod],
+    );
+  }
+  return Array.from(totals.entries()).map(([typ, amount]) => ({
+    ...closingKey(ctx),
+    ZAHLART_TYP: typ,
+    ZAHLART_NAME: nameByTyp.get(typ) ?? typ,
+    Z_ZAHLART_BETRAG: amount,
+  }));
+}
+
+/**
+ * cash_per_currency.csv: openEOS is EUR-only (see plan), so this is always
+ * exactly one row summing every cash (Bar) payment in the period.
+ */
+export function buildCashPerCurrencyRow(
+  ctx: ClosingContext,
+  payments: { paymentMethod: PaymentMethod; amount: number }[],
+): DsfinvkRow {
+  const cashTotal = payments
+    .filter((p) => p.paymentMethod === PaymentMethod.CASH)
+    .reduce((sum, p) => sum + p.amount, 0);
+  return {
+    ...closingKey(ctx),
+    ZAHLART_WAEH: 'EUR',
+    ZAHLART_BETRAG_WAEH: cashTotal,
+  };
 }
 
 /**

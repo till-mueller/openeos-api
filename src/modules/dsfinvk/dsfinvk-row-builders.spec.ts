@@ -1,12 +1,17 @@
 import {
+  buildCashPerCurrencyRow,
   buildCashregisterRow,
   buildLocationRow,
+  buildPaymentRows,
   buildTransactionsTseRow,
   buildVatRows,
   ClosingContext,
 } from './dsfinvk-row-builders';
 import { UstSchluessel } from '../../common/constants/dsfinvk-ust-schluessel';
-import { TseTransactionData } from '../../database/entities/payment.entity';
+import {
+  PaymentMethod,
+  TseTransactionData,
+} from '../../database/entities/payment.entity';
 
 const ctx: ClosingContext = {
   kasseId: 'device-1',
@@ -87,6 +92,66 @@ describe('buildVatRows', () => {
         UST_SCHLUESSEL: UstSchluessel.UMSATZSTEUERFREI,
       }),
     );
+  });
+});
+
+describe('buildPaymentRows', () => {
+  it('sums each PaymentMethod into its ZAHLART_TYP bucket', () => {
+    const rows = buildPaymentRows(ctx, [
+      { paymentMethod: PaymentMethod.CASH, amount: 20 },
+      { paymentMethod: PaymentMethod.CASH, amount: 5 },
+      { paymentMethod: PaymentMethod.SUMUP_TERMINAL, amount: 10 },
+    ]);
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ ZAHLART_TYP: 'Bar', Z_ZAHLART_BETRAG: 25 }),
+        expect.objectContaining({ ZAHLART_TYP: 'Unbar', Z_ZAHLART_BETRAG: 10 }),
+      ]),
+    );
+  });
+
+  it('collapses CARD and SUMUP_TERMINAL onto the same Unbar row -- openEOS cannot tell EC from credit', () => {
+    const rows = buildPaymentRows(ctx, [
+      { paymentMethod: PaymentMethod.CARD, amount: 15 },
+      { paymentMethod: PaymentMethod.SUMUP_TERMINAL, amount: 10 },
+    ]);
+    const unbar = rows.filter((r) => r.ZAHLART_TYP === 'Unbar');
+    expect(unbar).toHaveLength(1);
+    expect(unbar[0].Z_ZAHLART_BETRAG).toBe(25);
+  });
+
+  it('maps every digital-wallet method to ElZahlungsdienstleister', () => {
+    const rows = buildPaymentRows(ctx, [
+      { paymentMethod: PaymentMethod.PAYPAL, amount: 5 },
+      { paymentMethod: PaymentMethod.GOOGLE_PAY, amount: 3 },
+      { paymentMethod: PaymentMethod.APPLE_PAY, amount: 2 },
+    ]);
+    expect(rows).toEqual([
+      expect.objectContaining({
+        ZAHLART_TYP: 'ElZahlungsdienstleister',
+        Z_ZAHLART_BETRAG: 10,
+      }),
+    ]);
+  });
+});
+
+describe('buildCashPerCurrencyRow', () => {
+  it('sums only cash payments into a single EUR row', () => {
+    const row = buildCashPerCurrencyRow(ctx, [
+      { paymentMethod: PaymentMethod.CASH, amount: 20 },
+      { paymentMethod: PaymentMethod.CARD, amount: 100 },
+      { paymentMethod: PaymentMethod.CASH, amount: 5 },
+    ]);
+    expect(row).toEqual(
+      expect.objectContaining({ ZAHLART_WAEH: 'EUR', ZAHLART_BETRAG_WAEH: 25 }),
+    );
+  });
+
+  it('produces a zero row when there were no cash payments at all', () => {
+    const row = buildCashPerCurrencyRow(ctx, [
+      { paymentMethod: PaymentMethod.CARD, amount: 100 },
+    ]);
+    expect(row.ZAHLART_BETRAG_WAEH).toBe(0);
   });
 });
 
