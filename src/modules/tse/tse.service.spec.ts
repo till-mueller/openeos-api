@@ -4,22 +4,25 @@ import { FiskalyTseProvider } from './providers/fiskaly-tse.provider';
 import { LocalTseProvider } from './providers/local-tse.provider';
 
 describe('TseService', () => {
-  let organizationRepository: { findOne: jest.Mock };
+  let organizationRepository: { findOne: jest.Mock; save: jest.Mock; find: jest.Mock };
   let deviceRepository: { findOne: jest.Mock; find: jest.Mock; save: jest.Mock };
   let userOrganizationRepository: { findOne: jest.Mock };
-  let fiskalyProvider: jest.Mocked<Pick<FiskalyTseProvider, 'ensureClient' | 'recordTransaction' | 'testConnection' | 'exportData'>>;
+  let fiskalyProvider: jest.Mocked<Pick<FiskalyTseProvider, 'ensureClient' | 'recordTransaction' | 'testConnection' | 'exportData' | 'createTss'>>;
   let localProvider: jest.Mocked<Pick<LocalTseProvider, 'ensureClient' | 'recordTransaction' | 'testConnection' | 'exportData'>>;
+  let configService: { get: jest.Mock };
   let service: TseService;
 
   beforeEach(() => {
-    organizationRepository = { findOne: jest.fn() };
+    organizationRepository = { findOne: jest.fn(), save: jest.fn(), find: jest.fn() };
     deviceRepository = { findOne: jest.fn(), find: jest.fn(), save: jest.fn() };
     userOrganizationRepository = { findOne: jest.fn() };
+    configService = { get: jest.fn().mockReturnValue('') };
     fiskalyProvider = {
       ensureClient: jest.fn(),
       recordTransaction: jest.fn(),
       testConnection: jest.fn(),
       exportData: jest.fn(),
+      createTss: jest.fn(),
     };
     localProvider = {
       ensureClient: jest.fn(),
@@ -41,6 +44,7 @@ describe('TseService', () => {
       userOrganizationRepository as any,
       fiskalyProvider as any,
       localProvider as any,
+      configService as any,
     );
   });
 
@@ -360,6 +364,109 @@ describe('TseService', () => {
         expect.anything(),
         expect.objectContaining({ clientId: ORG_ID }),
       );
+    });
+  });
+
+  describe('createTss', () => {
+    it('provisions under the org-supplied credentials and persists them, unmarked as reseller', async () => {
+      userOrganizationRepository.findOne.mockResolvedValue({ id: 'membership-1' });
+      fiskalyProvider.createTss.mockResolvedValue({ tssId: 'tss-1', adminPin: '1234' });
+      organizationRepository.findOne.mockResolvedValue({ id: ORG_ID, settings: {} });
+
+      const result = await service.createTss(ORG_ID, USER_ID, { apiKey: 'own-key', apiSecret: 'own-secret' });
+
+      expect(result).toEqual({ ok: true, tssId: 'tss-1' });
+      expect(fiskalyProvider.createTss).toHaveBeenCalledWith('own-key', 'own-secret');
+      expect(organizationRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          settings: expect.objectContaining({
+            tse: expect.objectContaining({ fiskaly: expect.objectContaining({ apiKey: 'own-key', tssId: 'tss-1' }) }),
+          }),
+        }),
+      );
+      const savedSettings = organizationRepository.save.mock.calls[0][0].settings;
+      expect(savedSettings.tse.reseller).toBeUndefined();
+    });
+  });
+
+  describe('activatePlatformTse', () => {
+    it('rejects without an explicit Betreiber acknowledgment', async () => {
+      userOrganizationRepository.findOne.mockResolvedValue({ id: 'membership-1' });
+      await expect(service.activatePlatformTse(ORG_ID, USER_ID, false)).rejects.toThrow(/Betreiberverantwortung/);
+      expect(fiskalyProvider.createTss).not.toHaveBeenCalled();
+    });
+
+    it('refuses when the platform has no reseller credential configured', async () => {
+      userOrganizationRepository.findOne.mockResolvedValue({ id: 'membership-1' });
+      configService.get.mockReturnValue('');
+
+      const result = await service.activatePlatformTse(ORG_ID, USER_ID, true);
+
+      expect(result).toEqual({ ok: false, message: expect.stringContaining('nicht konfiguriert') });
+      expect(fiskalyProvider.createTss).not.toHaveBeenCalled();
+    });
+
+    it('provisions under the platform credential and marks the org as reseller-activated', async () => {
+      userOrganizationRepository.findOne.mockResolvedValue({ id: 'membership-1' });
+      configService.get.mockImplementation((key: string) =>
+        key === 'fiskaly.platformApiKey' ? 'platform-key' : key === 'fiskaly.platformApiSecret' ? 'platform-secret' : '',
+      );
+      fiskalyProvider.createTss.mockResolvedValue({ tssId: 'tss-2', adminPin: '5678' });
+      organizationRepository.findOne.mockResolvedValue({ id: ORG_ID, settings: {} });
+
+      const result = await service.activatePlatformTse(ORG_ID, USER_ID, true);
+
+      expect(result).toEqual({ ok: true, tssId: 'tss-2' });
+      expect(fiskalyProvider.createTss).toHaveBeenCalledWith('platform-key', 'platform-secret');
+      expect(organizationRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          settings: expect.objectContaining({
+            tse: expect.objectContaining({ reseller: true, activatedAt: expect.any(String) }),
+          }),
+        }),
+      );
+    });
+  });
+
+  describe('listActiveClientsForAdmin', () => {
+    it('skips orgs with TSE disabled and reports client counts for the rest', async () => {
+      organizationRepository.find.mockResolvedValue([
+        { id: 'org-a', name: 'Verein A', settings: { tse: { enabled: false } } },
+        {
+          id: 'org-b',
+          name: 'Verein B',
+          settings: { tse: { enabled: true, provider: 'fiskaly', reseller: true, activatedAt: '2026-09-01T00:00:00.000Z' } },
+        },
+      ]);
+      deviceRepository.find.mockResolvedValue([
+        { id: 'd1', settings: { tseClientId: 'client-1' } },
+        { id: 'd2', settings: { tseClientId: 'client-2' } },
+      ]);
+
+      const result = await service.listActiveClientsForAdmin();
+
+      expect(result).toEqual([
+        {
+          organizationId: 'org-b',
+          organizationName: 'Verein B',
+          provider: 'fiskaly',
+          reseller: true,
+          activatedAt: '2026-09-01T00:00:00.000Z',
+          clientCount: 3, // org-wide client + 2 device clients
+        },
+      ]);
+    });
+  });
+
+  describe('isResellerModeAvailable', () => {
+    it('is false when either platform credential half is missing', () => {
+      configService.get.mockImplementation((key: string) => (key === 'fiskaly.platformApiKey' ? 'key-only' : ''));
+      expect(service.isResellerModeAvailable()).toBe(false);
+    });
+
+    it('is true when both platform credential halves are set', () => {
+      configService.get.mockReturnValue('set');
+      expect(service.isResellerModeAvailable()).toBe(true);
     });
   });
 });

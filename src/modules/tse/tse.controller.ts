@@ -74,6 +74,31 @@ export class TseController {
     return this.tseService.createTss(organizationId, user.id, body);
   }
 
+  /** Whether this deployment offers self-service platform-reseller TSE activation. */
+  @Get('reseller-available')
+  @Roles(Role.ADMIN)
+  resellerAvailable() {
+    return { data: { available: this.tseService.isResellerModeAvailable() } };
+  }
+
+  /**
+   * Self-service activation under the platform's own fiskaly reseller
+   * account (see fiskaly's SIGN DE service description on sublicensing to
+   * Endkunden) -- no fiskaly account of the org's own required.
+   * `acknowledgedBetreiber` must be explicitly true: the org, not the
+   * platform, carries full KassenSichV statutory responsibility.
+   */
+  @Post('activate')
+  @HttpCode(HttpStatus.OK)
+  @Roles(Role.ADMIN)
+  activate(
+    @Param('organizationId', ParseUUIDPipe) organizationId: string,
+    @Body() body: { acknowledgedBetreiber: boolean },
+    @CurrentUser() user: User,
+  ) {
+    return this.tseService.activatePlatformTse(organizationId, user.id, body.acknowledgedBetreiber);
+  }
+
   /** All TSE client ids this org has signed under — for picking which one to export. */
   @Get('clients')
   @Roles(Role.ADMIN)

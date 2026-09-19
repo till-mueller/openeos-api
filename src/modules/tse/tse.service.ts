@@ -1,4 +1,5 @@
-import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Organization, OrganizationSettings } from '../../database/entities/organization.entity';
@@ -25,6 +26,7 @@ export class TseService {
     private readonly userOrganizationRepository: Repository<UserOrganization>,
     private readonly fiskalyProvider: FiskalyTseProvider,
     private readonly localProvider: LocalTseProvider,
+    private readonly configService: ConfigService,
   ) {}
 
   /**
@@ -209,11 +211,66 @@ export class TseService {
     input: { apiKey: string; apiSecret: string },
   ): Promise<{ ok: boolean; tssId?: string; message?: string }> {
     await this.checkMembership(organizationId, userId);
+    return this.provisionTss(organizationId, input.apiKey, input.apiSecret, {});
+  }
 
+  /**
+   * Self-service activation for the reseller/Endkunden model: provisions a
+   * dedicated TSS under the PLATFORM's own fiskaly account (see fiskaly's
+   * SIGN DE service description on sublicensing to Endkunden), not the
+   * org's own credentials -- an org never needs a fiskaly account of its
+   * own. Gapless per-org isolation is preserved: each org still gets its
+   * own TSS, just provisioned under one shared platform KUNDE credential
+   * instead of one credential per org.
+   *
+   * `acknowledgedBetreiber` is mandatory, not decorative: per that same
+   * service description, the ENDKUNDE (this org) -- not the platform --
+   * bears full statutory responsibility for KassenSichV compliance. An
+   * admin clicking "activate" is the only place that gets communicated;
+   * refusing to proceed without it is deliberate, not a formality.
+   */
+  async activatePlatformTse(
+    organizationId: string,
+    userId: string,
+    acknowledgedBetreiber: boolean,
+  ): Promise<{ ok: boolean; tssId?: string; message?: string }> {
+    await this.checkMembership(organizationId, userId);
+
+    if (!acknowledgedBetreiber) {
+      throw new BadRequestException({
+        code: ErrorCodes.VALIDATION_ERROR,
+        message: 'Bestätigung der Betreiberverantwortung (KassenSichV) erforderlich',
+      });
+    }
+
+    const platformApiKey = this.configService.get<string>('fiskaly.platformApiKey', '');
+    const platformApiSecret = this.configService.get<string>('fiskaly.platformApiSecret', '');
+    if (!platformApiKey || !platformApiSecret) {
+      return { ok: false, message: 'TSE-Reseller-Modus ist auf dieser Instanz nicht konfiguriert' };
+    }
+
+    return this.provisionTss(organizationId, platformApiKey, platformApiSecret, {
+      reseller: true,
+      activatedAt: new Date().toISOString(),
+    });
+  }
+
+  /**
+   * Shared TSS-provisioning core for both createTss (bring-your-own
+   * fiskaly account) and activatePlatformTse (platform reseller account)
+   * -- same fiskaly bootstrap sequence either way, only the credential
+   * source and the persisted settings extras differ.
+   */
+  private async provisionTss(
+    organizationId: string,
+    apiKey: string,
+    apiSecret: string,
+    settingsExtras: Partial<Pick<NonNullable<TseConfig>, 'reseller' | 'activatedAt'>>,
+  ): Promise<{ ok: boolean; tssId?: string; message?: string }> {
     let tssId: string;
     let adminPin: string;
     try {
-      ({ tssId, adminPin } = await this.fiskalyProvider.createTss(input.apiKey, input.apiSecret));
+      ({ tssId, adminPin } = await this.fiskalyProvider.createTss(apiKey, apiSecret));
     } catch (error) {
       this.logger.error(`TSS creation failed for org ${organizationId}: ${(error as Error).message}`);
       return { ok: false, message: (error as Error).message };
@@ -228,13 +285,14 @@ export class TseService {
       tse: {
         enabled: true,
         provider: 'fiskaly',
-        fiskaly: { apiKey: input.apiKey, apiSecret: input.apiSecret, tssId, adminPin },
+        fiskaly: { apiKey, apiSecret, tssId, adminPin },
+        ...settingsExtras,
       },
     };
     await this.organizationRepository.save(organization);
 
     try {
-      await this.fiskalyProvider.ensureClient({ apiKey: input.apiKey, apiSecret: input.apiSecret, tssId, adminPin }, organizationId);
+      await this.fiskalyProvider.ensureClient({ apiKey, apiSecret, tssId, adminPin }, organizationId);
     } catch (error) {
       // The TSS itself is fully provisioned and saved at this point -- only
       // the org-wide default client's eager registration failed. Same
@@ -246,6 +304,14 @@ export class TseService {
 
     this.logger.log(`TSS created and initialized for org ${organizationId}: ${tssId}`);
     return { ok: true, tssId };
+  }
+
+  /** Whether this deployment offers self-service platform-reseller TSE activation. */
+  isResellerModeAvailable(): boolean {
+    return !!(
+      this.configService.get<string>('fiskaly.platformApiKey', '') &&
+      this.configService.get<string>('fiskaly.platformApiSecret', '')
+    );
   }
 
   /**
@@ -303,6 +369,10 @@ export class TseService {
    */
   async listClientIds(organizationId: string, userId: string): Promise<string[]> {
     await this.checkMembership(organizationId, userId);
+    return this.getClientIds(organizationId);
+  }
+
+  private async getClientIds(organizationId: string): Promise<string[]> {
     const devices = await this.deviceRepository.find({
       where: { organizationId },
       select: ['id', 'settings'],
@@ -311,6 +381,41 @@ export class TseService {
       .map((d) => d.settings?.tseClientId)
       .filter((id): id is string => !!id);
     return [organizationId, ...new Set(clientIds)];
+  }
+
+  /**
+   * Platform-wide reconciliation view: every org with TSE enabled, its
+   * provider/activation source, and live client count -- the numbers to
+   * check against the platform's own fiskaly invoice. Caller (AdminController)
+   * is already SuperAdminGuard-gated, so no per-org membership check here.
+   */
+  async listActiveClientsForAdmin(): Promise<
+    {
+      organizationId: string;
+      organizationName: string;
+      provider: 'fiskaly' | 'local' | 'none';
+      reseller: boolean;
+      activatedAt: string | null;
+      clientCount: number;
+    }[]
+  > {
+    const organizations = await this.organizationRepository.find({
+      select: ['id', 'name', 'settings'],
+    });
+    const enabled = organizations.filter((org) => org.settings?.tse?.enabled);
+    return Promise.all(
+      enabled.map(async (org) => {
+        const clientIds = await this.getClientIds(org.id);
+        return {
+          organizationId: org.id,
+          organizationName: org.name,
+          provider: org.settings.tse!.provider,
+          reseller: !!org.settings.tse!.reseller,
+          activatedAt: org.settings.tse!.activatedAt ?? null,
+          clientCount: clientIds.length,
+        };
+      }),
+    );
   }
 
   /**

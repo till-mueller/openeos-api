@@ -21,6 +21,7 @@ import type { Request } from 'express';
 import { AdminService } from './admin.service';
 import { PrintersService } from '../printers/printers.service';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
+import { TseService } from '../tse/tse.service';
 import {
   QueryOrganizationsDto,
   QueryUsersDto,
@@ -54,6 +55,7 @@ export class AdminController {
     private readonly adminService: AdminService,
     private readonly printersService: PrintersService,
     private readonly platformSettingsService: PlatformSettingsService,
+    private readonly tseService: TseService,
   ) {}
 
   private getClientInfo(req: Request): { ip: string; userAgent?: string } {
@@ -567,6 +569,14 @@ export class AdminController {
   ) {
     const data =
       await this.platformSettingsService.updateNotificationSettings(updateDto);
+    return { data };
+  }
+
+  // === TSE (platform reseller reconciliation) ===
+
+  @Get('tse/clients')
+  async getActiveTseClients() {
+    const data = await this.tseService.listActiveClientsForAdmin();
     return { data };
   }
 }

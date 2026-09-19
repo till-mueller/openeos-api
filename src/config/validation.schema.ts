@@ -58,9 +58,18 @@ export const validationSchema = Joi.object({
   // fiskaly Cloud TSE — defaults to the TEST environment (sandbox middleware)
   FISKALY_API_BASE: Joi.string().default('https://kassensichv-middleware.fiskaly.com/api/v2'),
 
+  // Platform-level fiskaly reseller credential (KUNDE account) — optional.
+  // Unset on a deployment that doesn't offer TSE-as-a-service; orgs can
+  // still bring their own fiskaly account via settings.tse.fiskaly.
+  FISKALY_PLATFORM_API_KEY: Joi.string().allow('').default(''),
+  FISKALY_PLATFORM_API_SECRET: Joi.string().allow('').default(''),
+
   // Storage
   STORAGE_TYPE: Joi.string().valid('local', 's3').default('local'),
   STORAGE_LOCAL_PATH: Joi.string().default('./uploads'),
+
+  // Durable DSFinV-K archival (never-delete, separate volume from uploads)
+  DSFINVK_ARCHIVE_DIR: Joi.string().default('./dsfinvk-archives'),
 
   // Email (optional for development)
   EMAIL_ENABLED: Joi.boolean().default(false),
