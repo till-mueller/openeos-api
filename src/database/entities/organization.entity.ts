@@ -40,6 +40,15 @@ export interface OrganizationSettings {
    * ableiten, auch ein Verein kann steuerpflichtig sein.
    */
   vatExempt?: boolean;
+  /**
+   * Who keeps tips, for DSFinV-K's GV_TYP: 'staff' -> TrinkgeldAN (staff
+   * keeps it, doesn't touch the org's own revenue), 'business' ->
+   * TrinkgeldAG (tip belongs to the org like any other sale). Defaults to
+   * 'staff' — the common case for event/Verein staff — but this is a
+   * business fact, not something inferrable from the code; confirm per org
+   * before relying on it for an actual export.
+   */
+  tipOwnership?: 'staff' | 'business';
   pos?: {
     /**
      * Sofort kassieren oder auf Deckel buchen. Der einzige Wert aus dem

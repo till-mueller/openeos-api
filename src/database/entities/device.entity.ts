@@ -41,6 +41,16 @@ export interface DeviceSettings {
    * stay distinguishable even when several devices share one TSE.
    */
   tseClientId?: string;
+  /**
+   * Hardware identity for DSFinV-K's cashregister.csv (KASSE_BRAND/MODELL/
+   * SERIENNR/SW_BRAND/SW_VERSION). Distinct from tseClientId, which scopes
+   * the TSE registration, not the physical till.
+   */
+  kasseBrand?: string;
+  kasseModell?: string;
+  kasseSeriennr?: string;
+  kasseSwBrand?: string;
+  kasseSwVersion?: string;
   [key: string]: unknown;
 }
 
