@@ -28,6 +28,13 @@ export interface TseLocalConfig {
   organizationId: string;
 }
 
+/** Gross amount for one USt rate inside a signed transaction. */
+export interface TseVatSplit {
+  /** 19 | 7 | 0 — the only rates openEOS can produce (tax-rates.ts). */
+  rate: number;
+  grossAmount: number;
+}
+
 export interface TseTransactionInput {
   /** Needed by the local provider to address the right org's gateway room; harmless for cloud providers. */
   organizationId: string;
