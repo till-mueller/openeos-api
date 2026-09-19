@@ -3,7 +3,7 @@ import { TseController } from './tse.controller';
 import { TseService } from './tse.service';
 
 describe('TseController', () => {
-  let tseService: jest.Mocked<Pick<TseService, 'testConnection' | 'listClientIds' | 'exportData'>>;
+  let tseService: jest.Mocked<Pick<TseService, 'testConnection' | 'listClientIds' | 'exportData' | 'isResellerModeAvailable' | 'activatePlatformTse'>>;
   let controller: TseController;
 
   const user = { id: 'user-1' } as any;
@@ -14,8 +14,23 @@ describe('TseController', () => {
       testConnection: jest.fn(),
       listClientIds: jest.fn(),
       exportData: jest.fn(),
+      isResellerModeAvailable: jest.fn(),
+      activatePlatformTse: jest.fn(),
     };
     controller = new TseController(tseService as unknown as TseService);
+  });
+
+  it('resellerAvailable wraps the service result in { data }', () => {
+    tseService.isResellerModeAvailable.mockReturnValue(true);
+
+    const result = controller.resellerAvailable();
+
+    expect(result).toEqual({ data: { available: true } });
+  });
+
+  it('activate delegates the acknowledgment flag and caller identity to the service', () => {
+    controller.activate(ORG_ID, { acknowledgedBetreiber: true }, user);
+    expect(tseService.activatePlatformTse).toHaveBeenCalledWith(ORG_ID, 'user-1', true);
   });
 
   it('testConnection delegates to the service with the caller identity', () => {

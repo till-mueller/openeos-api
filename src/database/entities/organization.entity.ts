@@ -122,6 +122,15 @@ export interface OrganizationSettings {
       /** The printer-agent Device that has the TSE stick attached. */
       agentDeviceId: string;
     };
+    /**
+     * True when this TSS was provisioned via the platform's fiskaly
+     * reseller credential (TseService.activatePlatformTse), not an
+     * org-supplied fiskaly account. Distinguishes the two for admin
+     * reporting; doesn't change signing behavior at all.
+     */
+    reseller?: boolean;
+    /** Set once, at activation, by whichever path provisioned this TSS. */
+    activatedAt?: string;
   };
   orderFlow?: {
     receiptPrinting?: {

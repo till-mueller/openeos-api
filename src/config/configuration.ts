@@ -51,11 +51,26 @@ export default () => ({
     // always targets the non-billable, ephemeral test TSS. Point
     // FISKALY_API_BASE at https://kassensichv.fiskaly.com/api/v2 for LIVE.
     baseUrl: process.env.FISKALY_API_BASE || 'https://kassensichv-middleware.fiskaly.com/api/v2',
+
+    // Platform reseller credential (the KUNDE account under fiskaly's
+    // SIGN DE service description's Endkunden sublicensing terms) — used
+    // to auto-provision a dedicated TSS per org on self-service activation,
+    // so an org never needs its own fiskaly account. Empty on deployments
+    // that don't offer this.
+    platformApiKey: process.env.FISKALY_PLATFORM_API_KEY || '',
+    platformApiSecret: process.env.FISKALY_PLATFORM_API_SECRET || '',
   },
 
   storage: {
     type: process.env.STORAGE_TYPE || 'local',
     localPath: process.env.STORAGE_LOCAL_PATH || './uploads',
+  },
+
+  dsfinvk: {
+    // Deliberately separate from the uploads volume: that one supports
+    // delete (UploadsService.deleteImage), this one must never be pruned
+    // -- a decade of compliance archives, not user-replaceable images.
+    archiveDir: process.env.DSFINVK_ARCHIVE_DIR || './dsfinvk-archives',
   },
 
   email: {
