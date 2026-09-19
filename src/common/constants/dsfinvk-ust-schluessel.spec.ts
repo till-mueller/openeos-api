@@ -14,8 +14,13 @@ describe('ustSchluesselFor', () => {
     expect(ustSchluesselFor(19, true)).toBe(UstSchluessel.UMSATZSTEUERFREI);
   });
 
+  it('maps a normal-rate org selling a genuinely 0% line to NICHT_STEUERBAR', () => {
+    expect(ustSchluesselFor(0, false)).toBe(UstSchluessel.NICHT_STEUERBAR);
+  });
+
   it('refuses to invent an ID for a rate it has no legal mapping for', () => {
-    expect(() => ustSchluesselFor(0, false)).toThrow(/No UST_SCHLUESSEL mapping/);
-    expect(() => ustSchluesselFor(21, false)).toThrow(/No UST_SCHLUESSEL mapping/);
+    expect(() => ustSchluesselFor(21, false)).toThrow(
+      /No UST_SCHLUESSEL mapping/,
+    );
   });
 });

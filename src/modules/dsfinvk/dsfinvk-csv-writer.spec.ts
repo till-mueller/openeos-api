@@ -33,10 +33,16 @@ describe('writeDsfinvkCsv', () => {
   });
 
   it('rejects a text value that exceeds the schema-declared max length', () => {
-    expect(() => writeDsfinvkCsv(table, [{ ID: 'x'.repeat(11), AMOUNT: 1 }])).toThrow(/exceeds max length/);
+    expect(() =>
+      writeDsfinvkCsv(table, [{ ID: 'x'.repeat(11), AMOUNT: 1 }]),
+    ).toThrow(/exceeds max length/);
   });
 
   it('rejects a non-numeric value in a numeric column', () => {
-    expect(() => writeDsfinvkCsv(table, [{ ID: 'a1', AMOUNT: 'oops' as unknown as number }])).toThrow(/numeric/);
+    expect(() =>
+      writeDsfinvkCsv(table, [
+        { ID: 'a1', AMOUNT: 'oops' as unknown as number },
+      ]),
+    ).toThrow(/numeric/);
   });
 });

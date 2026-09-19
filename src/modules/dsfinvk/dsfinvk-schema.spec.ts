@@ -19,11 +19,19 @@ describe('DSFINVK_SCHEMA', () => {
   it('exposes cashregister.csv with the KASSE_* hardware fields', () => {
     const names = dsfinvkTable('cashregister.csv').columns.map((c) => c.name);
     expect(names).toEqual(
-      expect.arrayContaining(['KASSE_BRAND', 'KASSE_MODELL', 'KASSE_SERIENNR', 'KASSE_SW_BRAND', 'KASSE_SW_VERSION']),
+      expect.arrayContaining([
+        'KASSE_BRAND',
+        'KASSE_MODELL',
+        'KASSE_SERIENNR',
+        'KASSE_SW_BRAND',
+        'KASSE_SW_VERSION',
+      ]),
     );
   });
 
   it('throws on an unknown table name rather than returning undefined', () => {
-    expect(() => dsfinvkTable('nonexistent.csv')).toThrow(/Unknown DSFinV-K table/);
+    expect(() => dsfinvkTable('nonexistent.csv')).toThrow(
+      /Unknown DSFinV-K table/,
+    );
   });
 });

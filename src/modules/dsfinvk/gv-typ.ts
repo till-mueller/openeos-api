@@ -21,7 +21,10 @@ export enum GvTyp {
  * deposit at all, so it's a plain Umsatz line rather than Pfand -- the spec
  * has no "free reuse" GV_TYP, and charging nothing is not a business event.
  */
-export function classifyOrderItem(item: { pfandTypeId: string | null; isRefill: boolean }): GvTyp {
+export function classifyOrderItem(item: {
+  pfandTypeId: string | null;
+  isRefill: boolean;
+}): GvTyp {
   if (item.pfandTypeId && !item.isRefill) return GvTyp.PFAND;
   return GvTyp.UMSATZ;
 }
@@ -32,7 +35,9 @@ export function classifyPfandReturn(): GvTyp {
 }
 
 /** An Order-level discount, if present, is booked as its own Rabatt line. */
-export function classifyDiscount(order: { discountAmount: number }): GvTyp | null {
+export function classifyDiscount(order: {
+  discountAmount: number;
+}): GvTyp | null {
   return order.discountAmount > 0 ? GvTyp.RABATT : null;
 }
 

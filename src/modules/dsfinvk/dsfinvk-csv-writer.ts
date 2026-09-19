@@ -19,25 +19,41 @@ function formatNumeric(value: number): string {
 }
 
 function needsEncapsulation(field: string): boolean {
-  return field.includes(DELIMITER) || field.includes(ENCAPSULATOR) || field.includes('\n') || field.includes('\r');
+  return (
+    field.includes(DELIMITER) ||
+    field.includes(ENCAPSULATOR) ||
+    field.includes('\n') ||
+    field.includes('\r')
+  );
 }
 
 function encapsulate(field: string): string {
   if (!needsEncapsulation(field)) return field;
-  return ENCAPSULATOR + field.replace(new RegExp(ENCAPSULATOR, 'g'), ENCAPSULATOR + ENCAPSULATOR) + ENCAPSULATOR;
+  return (
+    ENCAPSULATOR +
+    field.replace(new RegExp(ENCAPSULATOR, 'g'), ENCAPSULATOR + ENCAPSULATOR) +
+    ENCAPSULATOR
+  );
 }
 
-function formatCell(column: DsfinvkColumn, value: string | number | null | undefined): string {
+function formatCell(
+  column: DsfinvkColumn,
+  value: string | number | null | undefined,
+): string {
   if (value === null || value === undefined) return '';
   if (column.type === 'numeric') {
     if (typeof value !== 'number') {
-      throw new Error(`Column ${column.name} is numeric but got ${typeof value}`);
+      throw new Error(
+        `Column ${column.name} is numeric but got ${typeof value}`,
+      );
     }
     return formatNumeric(value);
   }
   const str = String(value);
   if (column.maxLength !== null && str.length > column.maxLength) {
-    throw new Error(`Column ${column.name} exceeds max length ${column.maxLength}: "${str}"`);
+    throw new Error(
+      `Column ${column.name} exceeds max length ${column.maxLength}: "${str}"`,
+    );
   }
   return encapsulate(str);
 }
@@ -46,8 +62,13 @@ function formatCell(column: DsfinvkColumn, value: string | number | null | undef
  * Renders one table's rows to its CSV body, header included, exactly as
  * DSFinV-K expects it -- ready to write to a file inside the export ZIP.
  */
-export function writeDsfinvkCsv(table: DsfinvkTable, rows: DsfinvkRow[]): string {
+export function writeDsfinvkCsv(
+  table: DsfinvkTable,
+  rows: DsfinvkRow[],
+): string {
   const header = table.columns.map((c) => c.name).join(DELIMITER);
-  const lines = rows.map((row) => table.columns.map((c) => formatCell(c, row[c.name])).join(DELIMITER));
+  const lines = rows.map((row) =>
+    table.columns.map((c) => formatCell(c, row[c.name])).join(DELIMITER),
+  );
   return [header, ...lines].join(RECORD_DELIMITER) + RECORD_DELIMITER;
 }

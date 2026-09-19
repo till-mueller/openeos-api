@@ -1,16 +1,28 @@
-import { GvTyp, classifyDiscount, classifyOrderItem, classifyPfandReturn, classifyTip } from './gv-typ';
+import {
+  GvTyp,
+  classifyDiscount,
+  classifyOrderItem,
+  classifyPfandReturn,
+  classifyTip,
+} from './gv-typ';
 
 describe('classifyOrderItem', () => {
   it('classifies a plain product line as Umsatz', () => {
-    expect(classifyOrderItem({ pfandTypeId: null, isRefill: false })).toBe(GvTyp.UMSATZ);
+    expect(classifyOrderItem({ pfandTypeId: null, isRefill: false })).toBe(
+      GvTyp.UMSATZ,
+    );
   });
 
   it('classifies a deposit-bearing line as Pfand', () => {
-    expect(classifyOrderItem({ pfandTypeId: 'pt-1', isRefill: false })).toBe(GvTyp.PFAND);
+    expect(classifyOrderItem({ pfandTypeId: 'pt-1', isRefill: false })).toBe(
+      GvTyp.PFAND,
+    );
   });
 
   it('classifies a refill (no deposit charged) as Umsatz, not Pfand', () => {
-    expect(classifyOrderItem({ pfandTypeId: 'pt-1', isRefill: true })).toBe(GvTyp.UMSATZ);
+    expect(classifyOrderItem({ pfandTypeId: 'pt-1', isRefill: true })).toBe(
+      GvTyp.UMSATZ,
+    );
   });
 });
 
