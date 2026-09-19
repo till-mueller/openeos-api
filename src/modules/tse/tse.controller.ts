@@ -10,21 +10,28 @@ import {
   HttpCode,
   HttpStatus,
   BadRequestException,
+  UseGuards,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import type { Response } from 'express';
 import { TseService } from './tse.service';
 import { CurrentUser } from '../../common/decorators';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { OrganizationGuard } from '../../common/guards/organization.guard';
+import { Role } from '../../common/constants/roles.enum';
 import { User } from '../../database/entities';
 
 @ApiTags('TSE')
 @ApiBearerAuth('JWT-auth')
 @Controller('organizations/:organizationId/tse')
+@UseGuards(OrganizationGuard, RolesGuard)
 export class TseController {
   constructor(private readonly tseService: TseService) {}
 
   @Post('test-connection')
   @HttpCode(HttpStatus.OK)
+  @Roles(Role.ADMIN)
   testConnection(
     @Param('organizationId', ParseUUIDPipe) organizationId: string,
     @CurrentUser() user: User,
@@ -39,6 +46,7 @@ export class TseController {
    */
   @Post('register-client')
   @HttpCode(HttpStatus.OK)
+  @Roles(Role.ADMIN)
   registerClient(
     @Param('organizationId', ParseUUIDPipe) organizationId: string,
     @CurrentUser() user: User,
@@ -57,6 +65,7 @@ export class TseController {
    */
   @Post('fiskaly/create')
   @HttpCode(HttpStatus.OK)
+  @Roles(Role.ADMIN)
   createFiskalyTss(
     @Param('organizationId', ParseUUIDPipe) organizationId: string,
     @Body() body: { apiKey: string; apiSecret: string },
@@ -67,6 +76,7 @@ export class TseController {
 
   /** All TSE client ids this org has signed under — for picking which one to export. */
   @Get('clients')
+  @Roles(Role.ADMIN)
   listClients(
     @Param('organizationId', ParseUUIDPipe) organizationId: string,
     @CurrentUser() user: User,
@@ -83,6 +93,7 @@ export class TseController {
    * the next weekend's tenant.
    */
   @Get('export')
+  @Roles(Role.ADMIN)
   async exportData(
     @Param('organizationId', ParseUUIDPipe) organizationId: string,
     @Query('periodStart') periodStart: string,
