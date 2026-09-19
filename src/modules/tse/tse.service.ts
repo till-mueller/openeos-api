@@ -33,6 +33,12 @@ export class TseService {
    * Resolve the provider + its config for one org's TSE setting. Returns
    * null when TSE is off or the selected provider's credentials aren't set
    * yet (e.g. provider picked but fiskaly/local block not filled in).
+   *
+   * Reseller orgs (activatePlatformTse) never have the platform's real
+   * apiKey/apiSecret persisted on their own settings row at all -- see
+   * provisionTss's own comment -- so for those, substitute the platform
+   * credential back in here at call time instead of trusting the
+   * (deliberately blank) persisted fields.
    */
   private resolveProvider(
     tseConfig: TseConfig | undefined,
@@ -40,6 +46,15 @@ export class TseService {
   ): { provider: TseProvider<TseFiskalyConfig | TseLocalConfig>; config: TseFiskalyConfig | TseLocalConfig } | null {
     if (!tseConfig?.enabled) return null;
     if (tseConfig.provider === 'fiskaly' && tseConfig.fiskaly) {
+      if (tseConfig.reseller) {
+        const platformApiKey = this.configService.get<string>('fiskaly.platformApiKey', '');
+        const platformApiSecret = this.configService.get<string>('fiskaly.platformApiSecret', '');
+        if (!platformApiKey || !platformApiSecret) return null;
+        return {
+          provider: this.fiskalyProvider,
+          config: { ...tseConfig.fiskaly, apiKey: platformApiKey, apiSecret: platformApiSecret },
+        };
+      }
       return { provider: this.fiskalyProvider, config: tseConfig.fiskaly };
     }
     if (tseConfig.provider === 'local' && tseConfig.local) {
@@ -280,12 +295,23 @@ export class TseService {
     if (!organization) {
       return { ok: false, message: 'Organisation nicht gefunden' };
     }
+    // Reseller activations must NEVER persist the platform's real
+    // apiKey/apiSecret on the org's own settings row -- that row is
+    // returned verbatim to the org's own frontend (organizations.service.ts
+    // has no masking for tse.fiskaly, unlike sumup), so storing the
+    // platform's master credential there would hand every reseller-activated
+    // org the ability to act as the platform's fiskaly account entirely.
+    // resolveProvider() substitutes the real platform credential back in
+    // at call time instead. Bring-your-own orgs are unaffected: it's their
+    // own credential, already visible to their own admin either way.
+    const persistedApiKey = settingsExtras.reseller ? '' : apiKey;
+    const persistedApiSecret = settingsExtras.reseller ? '' : apiSecret;
     organization.settings = {
       ...organization.settings,
       tse: {
         enabled: true,
         provider: 'fiskaly',
-        fiskaly: { apiKey, apiSecret, tssId, adminPin },
+        fiskaly: { apiKey: persistedApiKey, apiSecret: persistedApiSecret, tssId, adminPin },
         ...settingsExtras,
       },
     };

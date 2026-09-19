@@ -426,6 +426,82 @@ describe('TseService', () => {
         }),
       );
     });
+
+    it('never persists the real platform credential onto the org row -- that row is returned unmasked to the org itself', async () => {
+      userOrganizationRepository.findOne.mockResolvedValue({ id: 'membership-1' });
+      configService.get.mockImplementation((key: string) =>
+        key === 'fiskaly.platformApiKey' ? 'platform-key' : key === 'fiskaly.platformApiSecret' ? 'platform-secret' : '',
+      );
+      fiskalyProvider.createTss.mockResolvedValue({ tssId: 'tss-2', adminPin: '5678' });
+      organizationRepository.findOne.mockResolvedValue({ id: ORG_ID, settings: {} });
+
+      await service.activatePlatformTse(ORG_ID, USER_ID, true);
+
+      const savedSettings = organizationRepository.save.mock.calls[0][0].settings;
+      expect(savedSettings.tse.fiskaly.apiKey).toBe('');
+      expect(savedSettings.tse.fiskaly.apiSecret).toBe('');
+      expect(savedSettings.tse.fiskaly.tssId).toBe('tss-2'); // tssId/adminPin are fine to keep -- not the secret
+    });
+  });
+
+  describe('resolveProvider via recordTransaction (reseller substitution)', () => {
+    it('signs using the platform credential, not the (blank) persisted one, for a reseller-activated org', async () => {
+      organizationRepository.findOne.mockResolvedValue({
+        id: ORG_ID,
+        settings: {
+          tse: {
+            enabled: true,
+            provider: 'fiskaly',
+            reseller: true,
+            fiskaly: { apiKey: '', apiSecret: '', tssId: 'tss-2', adminPin: '5678' },
+          },
+        },
+      });
+      configService.get.mockImplementation((key: string) =>
+        key === 'fiskaly.platformApiKey' ? 'platform-key' : key === 'fiskaly.platformApiSecret' ? 'platform-secret' : '',
+      );
+      fiskalyProvider.recordTransaction.mockResolvedValue({
+        provider: 'fiskaly',
+        clientId: ORG_ID,
+        transactionNumber: 1,
+        serialNumber: 'SN',
+        signatureCounter: 1,
+        signatureValue: 'sig',
+        signatureAlgorithm: 'algo',
+        startTime: 't0',
+        endTime: 't1',
+        processType: 'Kassenbeleg-V1',
+        processData: '',
+        qrCodeData: 'qr',
+      });
+
+      await service.recordTransaction(ORG_ID, null, { amount: 10, paymentMethod: 'cash' });
+
+      expect(fiskalyProvider.ensureClient).toHaveBeenCalledWith(
+        expect.objectContaining({ apiKey: 'platform-key', apiSecret: 'platform-secret', tssId: 'tss-2' }),
+        ORG_ID,
+      );
+    });
+
+    it('refuses to sign a reseller org if the platform credential is no longer configured', async () => {
+      organizationRepository.findOne.mockResolvedValue({
+        id: ORG_ID,
+        settings: {
+          tse: {
+            enabled: true,
+            provider: 'fiskaly',
+            reseller: true,
+            fiskaly: { apiKey: '', apiSecret: '', tssId: 'tss-2' },
+          },
+        },
+      });
+      configService.get.mockReturnValue('');
+
+      const result = await service.recordTransaction(ORG_ID, null, { amount: 10, paymentMethod: 'cash' });
+
+      expect(result).toBeNull();
+      expect(fiskalyProvider.recordTransaction).not.toHaveBeenCalled();
+    });
   });
 
   describe('listActiveClientsForAdmin', () => {
