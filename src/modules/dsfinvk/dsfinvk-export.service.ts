@@ -98,7 +98,20 @@ export class DsfinvkExportService {
     userId: string,
   ): Promise<DsfinvkExportArchive> {
     await this.checkMembership(organizationId, userId);
+    return this.generateExportInternal(organizationId, eventId, deviceId);
+  }
 
+  /**
+   * Same as generateExport, minus the membership check -- for callers that
+   * are already authorized by construction (the recurring archival cron
+   * job, which has no acting user at all) rather than an HTTP request from
+   * a specific member.
+   */
+  async generateExportInternal(
+    organizationId: string,
+    eventId: string,
+    deviceId: string,
+  ): Promise<DsfinvkExportArchive> {
     const organization = await this.organizationRepository.findOne({
       where: { id: organizationId },
     });
@@ -510,7 +523,7 @@ export class DsfinvkExportService {
     for (const { deviceId } of deviceRows) {
       try {
         archives.push(
-          await this.generateExport(organizationId, eventId, deviceId, userId),
+          await this.generateExportInternal(organizationId, eventId, deviceId),
         );
       } catch (error) {
         // "Nothing to export" for this one till (e.g. no captured payments

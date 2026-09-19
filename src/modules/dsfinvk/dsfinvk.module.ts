@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { DsfinvkController } from './dsfinvk.controller';
 import { DsfinvkExportService } from './dsfinvk-export.service';
+import { DsfinvkArchivalService } from './dsfinvk-archival.service';
 import {
   Organization,
   Event,
@@ -10,6 +11,7 @@ import {
   Payment,
   UserOrganization,
   DsfinvkClosing,
+  DsfinvkArchive,
 } from '../../database/entities';
 
 @Module({
@@ -22,10 +24,11 @@ import {
       Payment,
       UserOrganization,
       DsfinvkClosing,
+      DsfinvkArchive,
     ]),
   ],
   controllers: [DsfinvkController],
-  providers: [DsfinvkExportService],
+  providers: [DsfinvkExportService, DsfinvkArchivalService],
   exports: [DsfinvkExportService],
 })
 export class DsfinvkModule {}
