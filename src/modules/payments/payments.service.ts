@@ -463,9 +463,48 @@ export class PaymentsService {
       await this.updateOrderPaymentStatus(order);
     }
 
+    // Sign the reversal through the TSE -- the original payment above is
+    // never "unsigned"; this is a genuinely new, separately-signed
+    // transaction with inverted amounts (see TseService.reverseTransaction).
+    // Best-effort like the original capture's signing: never blocks the
+    // refund from completing.
+    await this.signReversalWithTse(organizationId, order, payment);
+
     this.logger.log(`Payment refunded: ${payment.id}`);
 
     return this.findOne(organizationId, paymentId, user);
+  }
+
+  /**
+   * Creates the reversal Payment row and signs it through the TSE. Shared
+   * shape with signPaymentWithTse (the original-capture path) -- mirrors it
+   * deliberately rather than diverging, so the two are easy to compare.
+   */
+  private async signReversalWithTse(
+    organizationId: string,
+    order: Order | null,
+    originalPayment: Payment,
+  ): Promise<void> {
+    if (!order) return;
+    try {
+      const tseData = await this.tseService.reverseTransaction(
+        organizationId,
+        order.createdByDeviceId ?? null,
+        { amount: Number(originalPayment.amount), paymentMethod: originalPayment.paymentMethod },
+      );
+      const reversal = this.paymentRepository.create({
+        orderId: originalPayment.orderId,
+        amount: -Number(originalPayment.amount),
+        paymentMethod: originalPayment.paymentMethod,
+        paymentProvider: originalPayment.paymentProvider,
+        status: PaymentTransactionStatus.CAPTURED,
+        reversesPaymentId: originalPayment.id,
+        tseData: tseData ?? null,
+      });
+      await this.paymentRepository.save(reversal);
+    } catch (error) {
+      this.logger.error(`TSE reversal signing failed for payment ${originalPayment.id}: ${(error as Error).message}`);
+    }
   }
 
   async getPaymentsByOrder(

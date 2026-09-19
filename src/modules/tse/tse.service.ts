@@ -102,6 +102,31 @@ export class TseService {
     }
   }
 
+  /**
+   * Signs a reversal for a captured payment being refunded/cancelled --
+   * never a status flip on the original. Once a TSE is in use, a receipt it
+   * already signed can't be "unsigned"; the only compliant path is a second,
+   * separately-signed transaction with inverted amounts, referencing the
+   * original (DSFinV-K's `references.csv`; Anhang B on `AVBelegstorno`
+   * explains why the naive in-place approach stops being valid the moment a
+   * TSE is protecting the till). Confirmed empirically against a live
+   * fiskaly TSS: a negative amount on the standard receipt type signs
+   * cleanly (HTTP 200, `process_data` decodes to the expected
+   * `Beleg^-10.00_..._0.00^-10.00:...` shape) -- no separate "reversal"
+   * receipt type exists or is needed at the TSE layer; the sign flip alone
+   * carries the meaning.
+   */
+  async reverseTransaction(
+    organizationId: string,
+    deviceId: string | null,
+    input: { amount: number; paymentMethod: string },
+  ): Promise<TseTransactionData | null> {
+    return this.recordTransaction(organizationId, deviceId, {
+      ...input,
+      amount: -Math.abs(input.amount),
+    });
+  }
+
   async testConnection(organizationId: string, userId: string): Promise<{ ok: boolean; message?: string }> {
     await this.checkMembership(organizationId, userId);
     const organization = await this.organizationRepository.findOne({

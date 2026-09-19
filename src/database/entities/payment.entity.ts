@@ -104,6 +104,17 @@ export class Payment extends SoftDeleteEntity {
   @Column({ name: 'processed_by_device_id', type: 'uuid', nullable: true })
   processedByDeviceId: string | null;
 
+  /**
+   * Set on a reversal payment (created by a refund/cancellation) to point
+   * back at the original captured payment it reverses. A TSE-protected
+   * system can't just flip an already-signed payment's status -- KassenSichV
+   * requires a *second*, separately-signed transaction with inverted
+   * amounts, with the original left untouched (DSFinV-K's `references.csv`
+   * mechanism). `null` on every normal, non-reversal payment.
+   */
+  @Column({ name: 'reverses_payment_id', type: 'uuid', nullable: true })
+  reversesPaymentId: string | null;
+
   // Relations
   @ManyToOne(() => Order, (order) => order.payments, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'order_id' })
@@ -119,6 +130,10 @@ export class Payment extends SoftDeleteEntity {
 
   @OneToMany(() => OrderItemPayment, (itemPayment) => itemPayment.payment)
   itemPayments: OrderItemPayment[];
+
+  @ManyToOne(() => Payment, { onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'reverses_payment_id' })
+  reversesPayment: Payment | null;
 
   // Helper methods
   isSuccessful(): boolean {

@@ -26,7 +26,9 @@ import {
   Event,
   ProductionStation,
   Organization,
+  Payment,
 } from '../../database/entities';
+import { PaymentTransactionStatus } from '../../database/entities/payment.entity';
 import { isPfandChargedForFulfillment } from '../../common/utils/pfand-policy';
 import {
   OrderStatus,
@@ -55,6 +57,7 @@ import {
 import { OrderPrintService } from '../print-jobs/order-print.service';
 import { PrintJobsService } from '../print-jobs/print-jobs.service';
 import { GatewayService } from '../gateway/gateway.service';
+import { TseService } from '../tse/tse.service';
 import { endOfDay } from '../../common/utils/date-range.util';
 
 export interface OrderStats {
@@ -85,11 +88,14 @@ export class OrdersService {
     private readonly eventRepository: Repository<Event>,
     @InjectRepository(ProductionStation)
     private readonly productionStationRepository: Repository<ProductionStation>,
+    @InjectRepository(Payment)
+    private readonly paymentRepository: Repository<Payment>,
     private readonly orderPrintService: OrderPrintService,
     private readonly printJobsService: PrintJobsService,
     @Inject(forwardRef(() => GatewayService))
     private readonly gatewayService: GatewayService,
     private readonly configService: ConfigService,
+    private readonly tseService: TseService,
   ) {}
 
   async create(
@@ -812,9 +818,46 @@ export class OrdersService {
     order.cancellationReason = cancelDto.reason || null;
     await this.orderRepository.save(order);
 
+    // Cancelling an order used to leave any already-captured payment
+    // untouched -- silently wrong once a TSE is signing sales, since the
+    // original receipt stays valid/unreversed in the eyes of the TSE log.
+    // Reverse every captured payment on this order the same way a refund
+    // does (see PaymentsService.signReversalWithTse): a new, separately
+    // signed transaction with inverted amounts, never an edit to the
+    // original. An order can have more than one captured payment (split
+    // payments), so this reverses all of them, not just the first.
+    await this.reverseCapturedPaymentsForOrder(organizationId, order);
+
     this.logger.log(`Order cancelled: ${order.orderNumber}`);
 
     return this.findOne(organizationId, orderId, user);
+  }
+
+  private async reverseCapturedPaymentsForOrder(organizationId: string, order: Order): Promise<void> {
+    const capturedPayments = await this.paymentRepository.find({
+      where: { orderId: order.id, status: PaymentTransactionStatus.CAPTURED },
+    });
+    for (const original of capturedPayments) {
+      try {
+        const tseData = await this.tseService.reverseTransaction(
+          organizationId,
+          order.createdByDeviceId ?? null,
+          { amount: Number(original.amount), paymentMethod: original.paymentMethod },
+        );
+        const reversal = this.paymentRepository.create({
+          orderId: original.orderId,
+          amount: -Number(original.amount),
+          paymentMethod: original.paymentMethod,
+          paymentProvider: original.paymentProvider,
+          status: PaymentTransactionStatus.CAPTURED,
+          reversesPaymentId: original.id,
+          tseData: tseData ?? null,
+        });
+        await this.paymentRepository.save(reversal);
+      } catch (error) {
+        this.logger.error(`TSE reversal signing failed for payment ${original.id}: ${(error as Error).message}`);
+      }
+    }
   }
 
   // Private helper methods

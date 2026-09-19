@@ -148,6 +148,52 @@ describe('TseService', () => {
     });
   });
 
+  describe('reverseTransaction', () => {
+    beforeEach(() => {
+      organizationRepository.findOne.mockResolvedValue({
+        id: ORG_ID,
+        settings: {
+          currency: 'EUR',
+          tse: { enabled: true, provider: 'fiskaly', fiskaly: { apiKey: 'k', apiSecret: 's', tssId: 't' } },
+        },
+      });
+      fiskalyProvider.recordTransaction.mockResolvedValue({
+        provider: 'fiskaly',
+        clientId: ORG_ID,
+        transactionNumber: 6,
+        serialNumber: 'SN',
+        signatureCounter: 2,
+        signatureValue: 'sig',
+        signatureAlgorithm: 'algo',
+        startTime: 't0',
+        endTime: 't1',
+        processType: 'Kassenbeleg-V1',
+        processData: '',
+        qrCodeData: 'qr',
+      });
+    });
+
+    it('negates a positive amount before signing', async () => {
+      await service.reverseTransaction(ORG_ID, null, { amount: 10, paymentMethod: 'cash' });
+
+      expect(fiskalyProvider.recordTransaction).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ amount: -10 }),
+      );
+    });
+
+    it('always signs a negative amount even if the caller already negated it', async () => {
+      // Math.abs before negating -- a caller passing an already-negative
+      // amount must not accidentally end up positive (double-negation bug).
+      await service.reverseTransaction(ORG_ID, null, { amount: -10, paymentMethod: 'cash' });
+
+      expect(fiskalyProvider.recordTransaction).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ amount: -10 }),
+      );
+    });
+  });
+
   describe('resolveClientId (via recordTransaction)', () => {
     it("assigns and persists a till's own client id (its device id) on first use", async () => {
       organizationRepository.findOne.mockResolvedValue({

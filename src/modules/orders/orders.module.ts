@@ -11,9 +11,11 @@ import {
   Event,
   ProductionStation,
   Organization,
+  Payment,
 } from '../../database/entities';
 import { PrintJobsModule } from '../print-jobs/print-jobs.module';
 import { GatewayModule } from '../gateway/gateway.module';
+import { TseModule } from '../tse/tse.module';
 
 @Module({
   imports: [
@@ -26,9 +28,11 @@ import { GatewayModule } from '../gateway/gateway.module';
       Event,
       ProductionStation,
       Organization,
+      Payment,
     ]),
     PrintJobsModule,
     forwardRef(() => GatewayModule),
+    TseModule,
   ],
   controllers: [OrdersController],
   providers: [OrdersService],

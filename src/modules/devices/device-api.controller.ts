@@ -1209,6 +1209,37 @@ export class DeviceApiController {
     order.cancellationReason = body.reason || null;
     await this.orderRepository.save(order);
 
+    // Reverse any already-captured payment through the TSE -- this handler
+    // used to leave captured payments completely untouched on cancel (the
+    // original receipt stayed valid/unreversed in the TSE log). Mirrors
+    // OrdersService.reverseCapturedPaymentsForOrder / PaymentsService's
+    // refund reversal: a new, separately signed transaction with inverted
+    // amounts, never an edit to the original.
+    const capturedPayments = await this.paymentRepository.find({
+      where: { orderId: order.id, status: PaymentTransactionStatus.CAPTURED },
+    });
+    for (const original of capturedPayments) {
+      try {
+        const tseData = await this.tseService.reverseTransaction(
+          organizationId,
+          order.createdByDeviceId ?? null,
+          { amount: Number(original.amount), paymentMethod: original.paymentMethod },
+        );
+        const reversal = this.paymentRepository.create({
+          orderId: original.orderId,
+          amount: -Number(original.amount),
+          paymentMethod: original.paymentMethod,
+          paymentProvider: original.paymentProvider,
+          status: PaymentTransactionStatus.CAPTURED,
+          reversesPaymentId: original.id,
+          tseData: tseData ?? null,
+        });
+        await this.paymentRepository.save(reversal);
+      } catch (error) {
+        this.logger.error(`TSE reversal signing failed for payment ${original.id}: ${(error as Error).message}`);
+      }
+    }
+
     // Gateway notifications
     this.gatewayService.notifyOrderUpdated(
       organizationId,
