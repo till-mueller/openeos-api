@@ -579,4 +579,24 @@ export class AdminController {
     const data = await this.tseService.listActiveClientsForAdmin();
     return { data };
   }
+
+  /** Status only -- configured flag + last 4 chars, never the real credential. */
+  @Get('settings/fiskaly')
+  async getFiskalyPlatformCredentialStatus() {
+    const data = await this.platformSettingsService.getFiskalyPlatformCredentialStatus();
+    return { data };
+  }
+
+  @Patch('settings/fiskaly')
+  async setFiskalyPlatformCredential(@Body() body: { apiKey: string; apiSecret: string }) {
+    await this.platformSettingsService.setFiskalyPlatformCredential(body.apiKey, body.apiSecret);
+    const data = await this.platformSettingsService.getFiskalyPlatformCredentialStatus();
+    return { data };
+  }
+
+  @Delete('settings/fiskaly')
+  async clearFiskalyPlatformCredential() {
+    await this.platformSettingsService.clearFiskalyPlatformCredential();
+    return { data: { success: true } };
+  }
 }

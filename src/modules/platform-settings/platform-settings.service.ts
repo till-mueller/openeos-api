@@ -3,8 +3,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { PlatformSetting } from '../../database/entities';
+import { EncryptionService } from '../../common/services/encryption.service';
 
 const ADMIN_NOTIFICATIONS_KEY = 'adminNotifications';
+const FISKALY_PLATFORM_CREDENTIAL_KEY = 'fiskalyPlatformCredential';
 
 export interface AdminNotifyOnSettings {
   userRegistered: boolean;
@@ -42,6 +44,7 @@ export class PlatformSettingsService {
     @InjectRepository(PlatformSetting)
     private readonly platformSettingRepository: Repository<PlatformSetting>,
     private readonly configService: ConfigService,
+    private readonly encryptionService: EncryptionService,
   ) {}
 
   async getNotificationSettings(): Promise<AdminNotificationSettings> {
@@ -96,6 +99,57 @@ export class PlatformSettingsService {
     const email = settings.email || fallbackEmail || null;
 
     return email || null;
+  }
+
+  /**
+   * The platform's fiskaly reseller credential (TSE-as-a-service, see
+   * fiskaly's SIGN DE service description on sublicensing to Endkunden).
+   * Encrypted at rest with EncryptionService -- everything else in this
+   * KV store is plaintext jsonb, which is fine for notification prefs but
+   * not for a credential that can create/sign under the platform's own
+   * fiskaly account. Superadmin-settable via the admin UI, alternative to
+   * (and takes priority over) the FISKALY_PLATFORM_API_KEY/SECRET env vars,
+   * so a deployment never has to touch docker-compose to turn this on.
+   */
+  async setFiskalyPlatformCredential(apiKey: string, apiSecret: string): Promise<void> {
+    const row = this.platformSettingRepository.create({
+      key: FISKALY_PLATFORM_CREDENTIAL_KEY,
+      value: {
+        apiKeyEncrypted: this.encryptionService.encrypt(apiKey),
+        apiSecretEncrypted: this.encryptionService.encrypt(apiSecret),
+        apiKeyLast4: apiKey.slice(-4),
+      },
+    });
+    await this.platformSettingRepository.save(row);
+    this.logger.log('Platform fiskaly reseller credential updated');
+  }
+
+  async clearFiskalyPlatformCredential(): Promise<void> {
+    await this.platformSettingRepository.delete({ key: FISKALY_PLATFORM_CREDENTIAL_KEY });
+    this.logger.log('Platform fiskaly reseller credential cleared');
+  }
+
+  /** Decrypted credential for actual use (TseService) -- never returned over HTTP. */
+  async getFiskalyPlatformCredential(): Promise<{ apiKey: string; apiSecret: string } | null> {
+    const row = await this.platformSettingRepository.findOne({ where: { key: FISKALY_PLATFORM_CREDENTIAL_KEY } });
+    const value = row?.value as { apiKeyEncrypted?: string; apiSecretEncrypted?: string } | undefined;
+    if (!value?.apiKeyEncrypted || !value?.apiSecretEncrypted) {
+      return null;
+    }
+    return {
+      apiKey: this.encryptionService.decrypt(value.apiKeyEncrypted),
+      apiSecret: this.encryptionService.decrypt(value.apiSecretEncrypted),
+    };
+  }
+
+  /** Status for the admin UI -- configured flag + a masked hint, never the real value. */
+  async getFiskalyPlatformCredentialStatus(): Promise<{ configured: boolean; apiKeyLast4: string | null }> {
+    const row = await this.platformSettingRepository.findOne({ where: { key: FISKALY_PLATFORM_CREDENTIAL_KEY } });
+    const value = row?.value as { apiKeyEncrypted?: string; apiKeyLast4?: string } | undefined;
+    return {
+      configured: !!value?.apiKeyEncrypted,
+      apiKeyLast4: value?.apiKeyLast4 ?? null,
+    };
   }
 
   /**

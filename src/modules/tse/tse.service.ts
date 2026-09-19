@@ -10,6 +10,7 @@ import { ErrorCodes } from '../../common/constants/error-codes';
 import { FiskalyTseProvider } from './providers/fiskaly-tse.provider';
 import { LocalTseProvider } from './providers/local-tse.provider';
 import { TseExportResult, TseFiskalyConfig, TseLocalConfig, TseProvider } from './tse.interface';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 
 type TseConfig = NonNullable<OrganizationSettings['tse']>;
 
@@ -27,7 +28,24 @@ export class TseService {
     private readonly fiskalyProvider: FiskalyTseProvider,
     private readonly localProvider: LocalTseProvider,
     private readonly configService: ConfigService,
+    private readonly platformSettingsService: PlatformSettingsService,
   ) {}
+
+  /**
+   * The platform's fiskaly reseller credential -- superadmin-settable via
+   * the admin UI (PlatformSettingsService, encrypted at rest) takes
+   * priority; falls back to FISKALY_PLATFORM_API_KEY/SECRET so a
+   * deployment can still configure this via docker-compose without ever
+   * touching the admin UI, e.g. for infra-as-code setups.
+   */
+  private async getPlatformFiskalyCredential(): Promise<{ apiKey: string; apiSecret: string } | null> {
+    const stored = await this.platformSettingsService.getFiskalyPlatformCredential();
+    if (stored) return stored;
+
+    const apiKey = this.configService.get<string>('fiskaly.platformApiKey', '');
+    const apiSecret = this.configService.get<string>('fiskaly.platformApiSecret', '');
+    return apiKey && apiSecret ? { apiKey, apiSecret } : null;
+  }
 
   /**
    * Resolve the provider + its config for one org's TSE setting. Returns
@@ -40,19 +58,18 @@ export class TseService {
    * credential back in here at call time instead of trusting the
    * (deliberately blank) persisted fields.
    */
-  private resolveProvider(
+  private async resolveProvider(
     tseConfig: TseConfig | undefined,
     organizationId: string,
-  ): { provider: TseProvider<TseFiskalyConfig | TseLocalConfig>; config: TseFiskalyConfig | TseLocalConfig } | null {
+  ): Promise<{ provider: TseProvider<TseFiskalyConfig | TseLocalConfig>; config: TseFiskalyConfig | TseLocalConfig } | null> {
     if (!tseConfig?.enabled) return null;
     if (tseConfig.provider === 'fiskaly' && tseConfig.fiskaly) {
       if (tseConfig.reseller) {
-        const platformApiKey = this.configService.get<string>('fiskaly.platformApiKey', '');
-        const platformApiSecret = this.configService.get<string>('fiskaly.platformApiSecret', '');
-        if (!platformApiKey || !platformApiSecret) return null;
+        const platformCredential = await this.getPlatformFiskalyCredential();
+        if (!platformCredential) return null;
         return {
           provider: this.fiskalyProvider,
-          config: { ...tseConfig.fiskaly, apiKey: platformApiKey, apiSecret: platformApiSecret },
+          config: { ...tseConfig.fiskaly, ...platformCredential },
         };
       }
       return { provider: this.fiskalyProvider, config: tseConfig.fiskaly };
@@ -79,7 +96,7 @@ export class TseService {
       where: { id: organizationId },
       select: ['id', 'settings'],
     });
-    const resolved = this.resolveProvider(organization?.settings?.tse, organizationId);
+    const resolved = await this.resolveProvider(organization?.settings?.tse, organizationId);
     if (!resolved) return null;
     const { provider, config } = resolved;
 
@@ -150,7 +167,7 @@ export class TseService {
       where: { id: organizationId },
       select: ['id', 'settings'],
     });
-    const resolved = this.resolveProvider(organization?.settings?.tse, organizationId);
+    const resolved = await this.resolveProvider(organization?.settings?.tse, organizationId);
     if (!resolved) {
       return { ok: false, message: 'TSE ist für diese Organisation nicht konfiguriert' };
     }
@@ -189,7 +206,7 @@ export class TseService {
       where: { id: organizationId },
       select: ['id', 'settings'],
     });
-    const resolved = this.resolveProvider(organization?.settings?.tse, organizationId);
+    const resolved = await this.resolveProvider(organization?.settings?.tse, organizationId);
     if (!resolved) {
       return { ok: false, message: 'TSE ist für diese Organisation nicht konfiguriert' };
     }
@@ -258,13 +275,12 @@ export class TseService {
       });
     }
 
-    const platformApiKey = this.configService.get<string>('fiskaly.platformApiKey', '');
-    const platformApiSecret = this.configService.get<string>('fiskaly.platformApiSecret', '');
-    if (!platformApiKey || !platformApiSecret) {
+    const platformCredential = await this.getPlatformFiskalyCredential();
+    if (!platformCredential) {
       return { ok: false, message: 'TSE-Reseller-Modus ist auf dieser Instanz nicht konfiguriert' };
     }
 
-    return this.provisionTss(organizationId, platformApiKey, platformApiSecret, {
+    return this.provisionTss(organizationId, platformCredential.apiKey, platformCredential.apiSecret, {
       reseller: true,
       activatedAt: new Date().toISOString(),
     });
@@ -333,11 +349,8 @@ export class TseService {
   }
 
   /** Whether this deployment offers self-service platform-reseller TSE activation. */
-  isResellerModeAvailable(): boolean {
-    return !!(
-      this.configService.get<string>('fiskaly.platformApiKey', '') &&
-      this.configService.get<string>('fiskaly.platformApiSecret', '')
-    );
+  async isResellerModeAvailable(): Promise<boolean> {
+    return !!(await this.getPlatformFiskalyCredential());
   }
 
   /**
@@ -366,7 +379,7 @@ export class TseService {
       where: { id: organizationId },
       select: ['id', 'settings'],
     });
-    const resolved = this.resolveProvider(organization?.settings?.tse, organizationId);
+    const resolved = await this.resolveProvider(organization?.settings?.tse, organizationId);
     if (!resolved || !resolved.provider.exportData) {
       throw new Error('TSE-Export ist für diese Organisation nicht verfügbar');
     }

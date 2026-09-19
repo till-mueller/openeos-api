@@ -10,6 +10,7 @@ describe('TseService', () => {
   let fiskalyProvider: jest.Mocked<Pick<FiskalyTseProvider, 'ensureClient' | 'recordTransaction' | 'testConnection' | 'exportData' | 'createTss'>>;
   let localProvider: jest.Mocked<Pick<LocalTseProvider, 'ensureClient' | 'recordTransaction' | 'testConnection' | 'exportData'>>;
   let configService: { get: jest.Mock };
+  let platformSettingsService: { getFiskalyPlatformCredential: jest.Mock };
   let service: TseService;
 
   beforeEach(() => {
@@ -17,6 +18,10 @@ describe('TseService', () => {
     deviceRepository = { findOne: jest.fn(), find: jest.fn(), save: jest.fn() };
     userOrganizationRepository = { findOne: jest.fn() };
     configService = { get: jest.fn().mockReturnValue('') };
+    // Default: no DB-stored platform credential, so getPlatformFiskalyCredential
+    // falls through to configService (env var) -- matches every existing
+    // test's expectations without further changes.
+    platformSettingsService = { getFiskalyPlatformCredential: jest.fn().mockResolvedValue(null) };
     fiskalyProvider = {
       ensureClient: jest.fn(),
       recordTransaction: jest.fn(),
@@ -45,6 +50,7 @@ describe('TseService', () => {
       fiskalyProvider as any,
       localProvider as any,
       configService as any,
+      platformSettingsService as any,
     );
   });
 
@@ -535,14 +541,20 @@ describe('TseService', () => {
   });
 
   describe('isResellerModeAvailable', () => {
-    it('is false when either platform credential half is missing', () => {
+    it('is false when there is no DB-stored credential and either env-var half is missing', async () => {
       configService.get.mockImplementation((key: string) => (key === 'fiskaly.platformApiKey' ? 'key-only' : ''));
-      expect(service.isResellerModeAvailable()).toBe(false);
+      await expect(service.isResellerModeAvailable()).resolves.toBe(false);
     });
 
-    it('is true when both platform credential halves are set', () => {
+    it('is true via the env-var fallback when both halves are set and nothing is stored in the DB', async () => {
       configService.get.mockReturnValue('set');
-      expect(service.isResellerModeAvailable()).toBe(true);
+      await expect(service.isResellerModeAvailable()).resolves.toBe(true);
+    });
+
+    it('prefers the DB-stored credential (admin UI) over the env var', async () => {
+      platformSettingsService.getFiskalyPlatformCredential.mockResolvedValue({ apiKey: 'db-key', apiSecret: 'db-secret' });
+      configService.get.mockReturnValue(''); // env var unset entirely
+      await expect(service.isResellerModeAvailable()).resolves.toBe(true);
     });
   });
 });

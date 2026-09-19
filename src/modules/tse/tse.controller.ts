@@ -77,8 +77,8 @@ export class TseController {
   /** Whether this deployment offers self-service platform-reseller TSE activation. */
   @Get('reseller-available')
   @Roles(Role.ADMIN)
-  resellerAvailable() {
-    return { data: { available: this.tseService.isResellerModeAvailable() } };
+  async resellerAvailable() {
+    return { data: { available: await this.tseService.isResellerModeAvailable() } };
   }
 
   /**
