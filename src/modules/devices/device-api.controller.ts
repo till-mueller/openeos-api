@@ -679,6 +679,11 @@ export class DeviceApiController {
 
     // Update order paid amount
     order.paidAmount = Number(order.paidAmount) + createDto.amount;
+    // Sticky: once requested, stays requested even if a later split payment
+    // on the same order omits the flag -- never silently undoes a "yes".
+    if (createDto.bewirtungsbelegRequested) {
+      order.bewirtungsbelegRequested = true;
+    }
     await this.updateOrderPaymentStatus(order);
 
     // For full payment, mark all items as paid
