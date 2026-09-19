@@ -10,7 +10,7 @@ describe('DsfinvkExportService', () => {
   let organizationRepository: { findOne: jest.Mock };
   let eventRepository: { findOne: jest.Mock };
   let deviceRepository: { findOne: jest.Mock };
-  let orderRepository: { find: jest.Mock };
+  let orderRepository: { find: jest.Mock; createQueryBuilder: jest.Mock };
   let paymentRepository: { find: jest.Mock };
   let userOrganizationRepository: { findOne: jest.Mock };
   let closingRepository: { findOne: jest.Mock };
@@ -81,7 +81,15 @@ describe('DsfinvkExportService', () => {
         .fn()
         .mockResolvedValue({ id: DEVICE_ID, name: 'Kasse 1', settings: {} }),
     };
-    orderRepository = { find: jest.fn().mockResolvedValue([order()]) };
+    orderRepository = {
+      find: jest.fn().mockResolvedValue([order()]),
+      createQueryBuilder: jest.fn().mockReturnValue({
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getRawMany: jest.fn().mockResolvedValue([{ deviceId: DEVICE_ID }]),
+      }),
+    };
     paymentRepository = { find: jest.fn().mockResolvedValue([]) };
     userOrganizationRepository = {
       findOne: jest.fn().mockResolvedValue({ id: 'membership-1' }),
@@ -190,5 +198,83 @@ describe('DsfinvkExportService', () => {
     await expect(
       service.generateExport(ORG_ID, EVENT_ID, DEVICE_ID, USER_ID),
     ).rejects.toThrow(BadRequestException);
+  });
+
+  describe('generateEventExport', () => {
+    it('rejects a caller who is not a member of the organization', async () => {
+      userOrganizationRepository.findOne.mockResolvedValue(null);
+      await expect(
+        service.generateEventExport(ORG_ID, EVENT_ID, USER_ID),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('rejects when no device has any orders in this event', async () => {
+      orderRepository.createQueryBuilder.mockReturnValue({
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getRawMany: jest.fn().mockResolvedValue([]),
+      });
+      await expect(
+        service.generateEventExport(ORG_ID, EVENT_ID, USER_ID),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('bundles one inner ZIP per device into one outer ZIP', async () => {
+      orderRepository.createQueryBuilder.mockReturnValue({
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getRawMany: jest
+          .fn()
+          .mockResolvedValue([{ deviceId: DEVICE_ID }, { deviceId: 'device-2' }]),
+      });
+      deviceRepository.findOne.mockImplementation(({ where }: any) =>
+        Promise.resolve({ id: where.id, name: `Kasse ${where.id}`, settings: {} }),
+      );
+
+      const result = await service.generateEventExport(ORG_ID, EVENT_ID, USER_ID);
+
+      expect(result.filename).toMatch(/^dsfinvk-.*alle-kassen\.zip$/);
+      expect(result.data.subarray(0, 2).toString('hex')).toBe('504b');
+    });
+
+    it('skips a till with nothing to export instead of failing the whole event', async () => {
+      orderRepository.createQueryBuilder.mockReturnValue({
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getRawMany: jest
+          .fn()
+          .mockResolvedValue([{ deviceId: DEVICE_ID }, { deviceId: 'device-empty' }]),
+      });
+      deviceRepository.findOne.mockImplementation(({ where }: any) =>
+        Promise.resolve({ id: where.id, name: `Kasse ${where.id}`, settings: {} }),
+      );
+      orderRepository.find.mockImplementation(({ where }: any) =>
+        Promise.resolve(
+          where.createdByDeviceId === DEVICE_ID ? [order()] : [],
+        ),
+      );
+
+      const result = await service.generateEventExport(ORG_ID, EVENT_ID, USER_ID);
+
+      expect(result.data.length).toBeGreaterThan(0);
+    });
+
+    it('fails the whole event export if every till has nothing to report', async () => {
+      orderRepository.createQueryBuilder.mockReturnValue({
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getRawMany: jest.fn().mockResolvedValue([{ deviceId: DEVICE_ID }]),
+      });
+      orderRepository.find.mockResolvedValue([]);
+      paymentRepository.find.mockResolvedValue([]);
+
+      await expect(
+        service.generateEventExport(ORG_ID, EVENT_ID, USER_ID),
+      ).rejects.toThrow(BadRequestException);
+    });
   });
 });

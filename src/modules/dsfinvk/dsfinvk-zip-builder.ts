@@ -36,3 +36,33 @@ export function buildDsfinvkZip(
     void archive.finalize();
   });
 }
+
+/**
+ * Wraps several already-built per-till archives into one outer ZIP, one
+ * inner .zip per device. Deliberately does NOT merge the per-till CSVs
+ * together -- each till's Z_NR sequence, index.xml and DTD have to stay
+ * independently reconstructable for an auditor to verify gaplessness per
+ * Kasse (see dsfinvk-closing.entity.ts), so this is packaging, not merging.
+ */
+export function buildDsfinvkEventZip(
+  archives: DsfinvkExportArchive[],
+  filename: string,
+): Promise<DsfinvkExportArchive> {
+  return new Promise((resolve, reject) => {
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    const chunks: Buffer[] = [];
+
+    archive.on('data', (chunk: Buffer) => chunks.push(chunk));
+    archive.on('warning', (err) => {
+      if (err.code !== 'ENOENT') reject(err);
+    });
+    archive.on('error', reject);
+    archive.on('end', () => resolve({ data: Buffer.concat(chunks), filename }));
+
+    for (const inner of archives) {
+      archive.append(inner.data, { name: inner.filename });
+    }
+
+    void archive.finalize();
+  });
+}

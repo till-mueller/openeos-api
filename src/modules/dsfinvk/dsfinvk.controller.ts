@@ -39,4 +39,32 @@ export class DsfinvkController {
     );
     response.send(result.data);
   }
+
+  /**
+   * One click for every till used in this event: loops the per-device
+   * export above over each one and packages the results into one outer
+   * ZIP. Each till still gets its own independent Z_NR allocation --
+   * this is a convenience wrapper around exportData, not a different
+   * export.
+   */
+  @Get('events/:eventId/export')
+  async exportEventData(
+    @Param('organizationId', ParseUUIDPipe) organizationId: string,
+    @Param('eventId', ParseUUIDPipe) eventId: string,
+    @CurrentUser() user: User,
+    @Res() res: unknown,
+  ) {
+    const result = await this.dsfinvkExportService.generateEventExport(
+      organizationId,
+      eventId,
+      user.id,
+    );
+    const response = res as Response;
+    response.setHeader('Content-Type', 'application/zip');
+    response.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${result.filename}"`,
+    );
+    response.send(result.data);
+  }
 }

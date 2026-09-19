@@ -24,7 +24,11 @@ import {
 } from '../../common/constants/dsfinvk-ust-schluessel';
 import { dsfinvkTable } from './dsfinvk-schema';
 import { DsfinvkRow, writeDsfinvkCsv } from './dsfinvk-csv-writer';
-import { DsfinvkExportArchive, buildDsfinvkZip } from './dsfinvk-zip-builder';
+import {
+  DsfinvkExportArchive,
+  buildDsfinvkZip,
+  buildDsfinvkEventZip,
+} from './dsfinvk-zip-builder';
 import {
   BusinessCaseLine,
   buildBusinessCaseRows,
@@ -462,6 +466,69 @@ export class DsfinvkExportService {
 
     const filename = `dsfinvk-${event.name.replace(/[^a-z0-9]+/gi, '-')}-${device.name.replace(/[^a-z0-9]+/gi, '-')}-z${closing.zNr}.zip`;
     return buildDsfinvkZip(csvFiles, filename);
+  }
+
+  /**
+   * One click for every till: loops generateExport() over every device
+   * that has orders in this event, and packages the resulting per-till
+   * ZIPs into one outer ZIP. Each inner export still gets its own atomic
+   * Z_NR allocation exactly as if it were called individually -- this is
+   * a convenience wrapper, not a different code path, so a partial
+   * failure on one till doesn't cost the others their allocation.
+   */
+  async generateEventExport(
+    organizationId: string,
+    eventId: string,
+    userId: string,
+  ): Promise<DsfinvkExportArchive> {
+    await this.checkMembership(organizationId, userId);
+
+    const event = await this.eventRepository.findOne({
+      where: { id: eventId, organizationId },
+    });
+    if (!event)
+      throw new NotFoundException({
+        code: ErrorCodes.NOT_FOUND,
+        message: 'Event nicht gefunden',
+      });
+
+    const deviceRows = await this.orderRepository
+      .createQueryBuilder('order')
+      .select('DISTINCT order.createdByDeviceId', 'deviceId')
+      .where('order.organizationId = :organizationId', { organizationId })
+      .andWhere('order.eventId = :eventId', { eventId })
+      .andWhere('order.createdByDeviceId IS NOT NULL')
+      .getRawMany<{ deviceId: string }>();
+
+    if (deviceRows.length === 0)
+      throw new BadRequestException({
+        code: ErrorCodes.VALIDATION_ERROR,
+        message: 'Fuer dieses Event liegen keine Bestellungen mit Kassen-Zuordnung vor',
+      });
+
+    const archives: DsfinvkExportArchive[] = [];
+    for (const { deviceId } of deviceRows) {
+      try {
+        archives.push(
+          await this.generateExport(organizationId, eventId, deviceId, userId),
+        );
+      } catch (error) {
+        // "Nothing to export" for this one till (e.g. no captured payments
+        // since its last closing) shouldn't sink the other tills' exports.
+        // Any other failure (device gone, DB error) should still surface.
+        if (error instanceof BadRequestException) continue;
+        throw error;
+      }
+    }
+
+    if (archives.length === 0)
+      throw new BadRequestException({
+        code: ErrorCodes.VALIDATION_ERROR,
+        message: 'Nichts zu exportieren fuer dieses Event',
+      });
+
+    const filename = `dsfinvk-${event.name.replace(/[^a-z0-9]+/gi, '-')}-alle-kassen.zip`;
+    return buildDsfinvkEventZip(archives, filename);
   }
 
   private async allocateClosing(
