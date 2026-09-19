@@ -29,6 +29,9 @@ export * from './discount-voucher.entity';
 export * from './pfand-type.entity';
 export * from './pfand-return.entity';
 
+// DSFinV-K export
+export * from './dsfinvk-closing.entity';
+
 // Devices & Print
 export * from './device.entity';
 export * from './printer.entity';
