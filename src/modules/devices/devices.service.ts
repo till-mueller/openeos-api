@@ -315,6 +315,25 @@ export class DevicesService {
     device.verificationCode = null; // Clear the code after linking
     this.applyTypeDefaults(device);
 
+    // Reuse an existing TSE client (fiskaly bills per client) when a
+    // device with this exact name was already linked in this org before
+    // -- e.g. the same till re-registering after its token was reset.
+    // Without this, every re-registration mints a brand-new fiskaly
+    // client even though it's really the same physical till.
+    const sameNameDevices = await this.deviceRepository.find({
+      where: { organizationId: linkDto.organizationId, name: device.name },
+      order: { createdAt: 'DESC' },
+    });
+    const priorWithClient = sameNameDevices.find(
+      (d) => d.id !== device.id && d.settings.tseClientId,
+    );
+    if (priorWithClient) {
+      device.settings = { ...device.settings, tseClientId: priorWithClient.settings.tseClientId };
+      this.logger.log(
+        `Reusing TSE client ${priorWithClient.settings.tseClientId} for device "${device.name}" (matched by name against ${priorWithClient.id})`,
+      );
+    }
+
     await this.deviceRepository.save(device);
     this.logger.log(`Device linked: ${device.name} (${device.id}) to org ${linkDto.organizationId} by user ${user.email}`);
 
