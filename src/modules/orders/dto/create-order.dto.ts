@@ -196,4 +196,12 @@ export class CreateOrderDto {
   @IsString()
   @MaxLength(255)
   discountReason?: string;
+
+  @ApiPropertyOptional({
+    example: '550e8400-e29b-41d4-a716-446655440000',
+    description: 'ID des PIN-authentifizierten Kassierers, der die Bestellung anlegt',
+  })
+  @IsOptional()
+  @IsUUID()
+  userId?: string;
 }

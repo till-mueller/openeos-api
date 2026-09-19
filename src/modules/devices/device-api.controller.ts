@@ -428,13 +428,23 @@ export class DeviceApiController {
 
   @Get('orders/open')
   @ApiOperation({
-    summary: 'Get open (unpaid/partly paid) orders for device organization',
+    summary: 'Get open (unpaid/partly paid) orders created by the current cashier',
   })
-  async getOpenOrders(@CurrentDevice() device: Device) {
+  async getOpenOrders(
+    @CurrentDevice() device: Device,
+    @Query('userId') userId?: string,
+  ) {
     const organizationId = requireOrganization(device);
+    // Scope to whoever is actually standing at this till: the PIN-verified
+    // cashier when one is active, otherwise the till itself. Without this,
+    // every open tab in the org shows up on every device (#POS feedback).
+    const ownerFilter = userId
+      ? { createdByUserId: userId }
+      : { createdByDeviceId: device.id };
     const orders = await this.orderRepository.find({
       where: {
         organizationId,
+        ...ownerFilter,
         paymentStatus: In([PaymentStatus.UNPAID, PaymentStatus.PARTLY_PAID]),
         status: In([OrderStatus.OPEN, OrderStatus.IN_PROGRESS]),
       },
@@ -524,6 +534,7 @@ export class DeviceApiController {
       discountReason: createDto.discountReason || null,
       tipAmount: createDto.tipAmount || 0,
       createdByDeviceId: device.id,
+      createdByUserId: createDto.userId || null,
       status: OrderStatus.OPEN,
       paymentStatus: PaymentStatus.UNPAID,
     });
