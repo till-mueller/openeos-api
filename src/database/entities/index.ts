@@ -31,6 +31,7 @@ export * from './pfand-return.entity';
 
 // DSFinV-K export
 export * from './dsfinvk-closing.entity';
+export * from './dsfinvk-archive.entity';
 
 // Devices & Print
 export * from './device.entity';
