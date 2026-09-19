@@ -24,7 +24,10 @@ import {
 import { PaymentStatus } from '../../database/entities/order.entity';
 import { OrganizationRole } from '../../database/entities/user-organization.entity';
 import { ErrorCodes } from '../../common/constants/error-codes';
-import { PaginatedResult, createPaginatedResult } from '../../common/dto/pagination.dto';
+import {
+  PaginatedResult,
+  createPaginatedResult,
+} from '../../common/dto/pagination.dto';
 import { CreatePaymentDto, SplitPaymentDto, QueryPaymentsDto } from './dto';
 import { OrderPrintService } from '../print-jobs/order-print.service';
 import { TseService } from '../tse/tse.service';
@@ -65,12 +68,16 @@ export class PaymentsService {
     organizationId: string,
     paymentId: string,
     user: User,
-  ): Promise<{ payment: Payment; order: Order; organization: Organization | null }> {
+  ): Promise<{
+    payment: Payment;
+    order: Order;
+    organization: Organization | null;
+  }> {
     await this.checkMembership(organizationId, user.id);
 
     const payment = await this.paymentRepository.findOne({
       where: { id: paymentId },
-      relations: ['order', 'order.items'],
+      relations: ['order', 'order.items', 'order.event', 'order.createdByUser'],
     });
     if (!payment || payment.order.organizationId !== organizationId) {
       throw new NotFoundException({
@@ -91,8 +98,16 @@ export class PaymentsService {
     paymentId: string,
     user: User,
   ): Promise<{ data: Buffer; filename: string }> {
-    const { payment, order, organization } = await this.getPaymentForReceipt(organizationId, paymentId, user);
-    const data = await this.receiptPdfService.generateReceiptPdf(payment, order, organization);
+    const { payment, order, organization } = await this.getPaymentForReceipt(
+      organizationId,
+      paymentId,
+      user,
+    );
+    const data = await this.receiptPdfService.generateReceiptPdf(
+      payment,
+      order,
+      organization,
+    );
     return { data, filename: `beleg-${order.orderNumber}.pdf` };
   }
 
@@ -107,8 +122,16 @@ export class PaymentsService {
     email: string,
     user: User,
   ): Promise<{ ok: boolean; message?: string }> {
-    const { payment, order, organization } = await this.getPaymentForReceipt(organizationId, paymentId, user);
-    const pdf = await this.receiptPdfService.generateReceiptPdf(payment, order, organization);
+    const { payment, order, organization } = await this.getPaymentForReceipt(
+      organizationId,
+      paymentId,
+      user,
+    );
+    const pdf = await this.receiptPdfService.generateReceiptPdf(
+      payment,
+      order,
+      organization,
+    );
     const sent = await this.emailService.sendReceiptEmail({
       to: email,
       organizationName: organization?.name || 'OpenEOS',
@@ -119,7 +142,9 @@ export class PaymentsService {
     if (!sent) {
       return { ok: false, message: 'E-Mail-Versand fehlgeschlagen' };
     }
-    this.logger.log(`Receipt for order ${order.orderNumber} emailed to ${email} by user ${user.id}`);
+    this.logger.log(
+      `Receipt for order ${order.orderNumber} emailed to ${email} by user ${user.id}`,
+    );
     return { ok: true };
   }
 
@@ -128,19 +153,27 @@ export class PaymentsService {
    * Best-effort: never throws — a TSE outage must not block the sale (see
    * TseService.recordTransaction). No-op when TSE isn't configured.
    */
-  private async signPaymentWithTse(order: Order, payment: Payment): Promise<void> {
+  private async signPaymentWithTse(
+    order: Order,
+    payment: Payment,
+  ): Promise<void> {
     try {
       const tseData = await this.tseService.recordTransaction(
         order.organizationId,
         order.createdByDeviceId ?? null,
-        { amount: Number(payment.amount), paymentMethod: payment.paymentMethod },
+        {
+          amount: Number(payment.amount),
+          paymentMethod: payment.paymentMethod,
+        },
       );
       if (tseData) {
         payment.tseData = tseData;
         await this.paymentRepository.save(payment);
       }
     } catch (error) {
-      this.logger.error(`TSE signing failed for payment ${payment.id}: ${(error as Error).message}`);
+      this.logger.error(
+        `TSE signing failed for payment ${payment.id}: ${(error as Error).message}`,
+      );
     }
   }
 
@@ -206,25 +239,29 @@ export class PaymentsService {
       }
     }
 
-    this.logger.log(`Payment created: ${payment.id} for order ${order.orderNumber}`);
+    this.logger.log(
+      `Payment created: ${payment.id} for order ${order.orderNumber}`,
+    );
 
     // Sign through the TSE before printing, so the receipt can carry the
     // signature/QR code (see OrderPrintService.handlePaymentReceived).
     await this.signPaymentWithTse(order, payment);
 
     // Trigger auto-printing for payment
-    this.orderPrintService.handlePaymentReceived(organizationId, {
-      orderId: order.id,
-      orderNumber: order.orderNumber,
-      paymentId: payment.id,
-      amount: Number(payment.amount),
-      paymentMethod: payment.paymentMethod,
-      isFullyPaid: isFullyPaid,
-      order,
-      tseData: payment.tseData,
-    }).catch((err) => {
-      this.logger.error(`Failed to trigger payment printing: ${err.message}`);
-    });
+    this.orderPrintService
+      .handlePaymentReceived(organizationId, {
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        paymentId: payment.id,
+        amount: Number(payment.amount),
+        paymentMethod: payment.paymentMethod,
+        isFullyPaid: isFullyPaid,
+        order,
+        tseData: payment.tseData,
+      })
+      .catch((err) => {
+        this.logger.error(`Failed to trigger payment printing: ${err.message}`);
+      });
 
     return this.findOne(organizationId, payment.id, user);
   }
@@ -253,7 +290,7 @@ export class PaymentsService {
     const itemsToUpdate: { item: OrderItem; quantityToPayNow: number }[] = [];
 
     for (const splitItem of splitDto.items) {
-      const orderItem = order.items.find(i => i.id === splitItem.orderItemId);
+      const orderItem = order.items.find((i) => i.id === splitItem.orderItemId);
 
       if (!orderItem) {
         throw new NotFoundException({
@@ -271,10 +308,13 @@ export class PaymentsService {
       }
 
       const pricePerUnit =
-        (Number(orderItem.unitPrice) + Number(orderItem.optionsPrice));
+        Number(orderItem.unitPrice) + Number(orderItem.optionsPrice);
       calculatedTotal += pricePerUnit * splitItem.quantity;
 
-      itemsToUpdate.push({ item: orderItem, quantityToPayNow: splitItem.quantity });
+      itemsToUpdate.push({
+        item: orderItem,
+        quantityToPayNow: splitItem.quantity,
+      });
     }
 
     // Allow some tolerance for rounding
@@ -303,8 +343,7 @@ export class PaymentsService {
 
     // Create order item payments and update paid quantities
     for (const { item, quantityToPayNow } of itemsToUpdate) {
-      const pricePerUnit =
-        (Number(item.unitPrice) + Number(item.optionsPrice));
+      const pricePerUnit = Number(item.unitPrice) + Number(item.optionsPrice);
 
       const itemPayment = this.orderItemPaymentRepository.create({
         paymentId: payment.id,
@@ -323,25 +362,29 @@ export class PaymentsService {
     order.paidAmount = Number(order.paidAmount) + splitDto.amount;
     await this.updateOrderPaymentStatus(order);
 
-    this.logger.log(`Split payment created: ${payment.id} for order ${order.orderNumber}`);
+    this.logger.log(
+      `Split payment created: ${payment.id} for order ${order.orderNumber}`,
+    );
 
     // Sign through the TSE before printing (see create() above).
     await this.signPaymentWithTse(order, payment);
 
     // Trigger auto-printing for payment
     const isFullyPaid = Number(order.paidAmount) >= Number(order.total);
-    this.orderPrintService.handlePaymentReceived(organizationId, {
-      orderId: order.id,
-      orderNumber: order.orderNumber,
-      paymentId: payment.id,
-      amount: Number(payment.amount),
-      paymentMethod: payment.paymentMethod,
-      isFullyPaid,
-      order,
-      tseData: payment.tseData,
-    }).catch((err) => {
-      this.logger.error(`Failed to trigger payment printing: ${err.message}`);
-    });
+    this.orderPrintService
+      .handlePaymentReceived(organizationId, {
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        paymentId: payment.id,
+        amount: Number(payment.amount),
+        paymentMethod: payment.paymentMethod,
+        isFullyPaid,
+        order,
+        tseData: payment.tseData,
+      })
+      .catch((err) => {
+        this.logger.error(`Failed to trigger payment printing: ${err.message}`);
+      });
 
     return this.findOne(organizationId, payment.id, user);
   }
@@ -362,7 +405,9 @@ export class PaymentsService {
       .where('order.organizationId = :organizationId', { organizationId });
 
     if (query.orderId) {
-      queryBuilder.andWhere('payment.orderId = :orderId', { orderId: query.orderId });
+      queryBuilder.andWhere('payment.orderId = :orderId', {
+        orderId: query.orderId,
+      });
     }
 
     if (query.paymentMethod) {
@@ -372,33 +417,45 @@ export class PaymentsService {
     }
 
     if (query.status) {
-      queryBuilder.andWhere('payment.status = :status', { status: query.status });
+      queryBuilder.andWhere('payment.status = :status', {
+        status: query.status,
+      });
     }
 
     if (query.dateFrom) {
-      queryBuilder.andWhere('payment.createdAt >= :dateFrom', { dateFrom: query.dateFrom });
+      queryBuilder.andWhere('payment.createdAt >= :dateFrom', {
+        dateFrom: query.dateFrom,
+      });
     }
 
     if (query.dateTo) {
-      queryBuilder.andWhere('payment.createdAt <= :dateTo', { dateTo: query.dateTo });
+      queryBuilder.andWhere('payment.createdAt <= :dateTo', {
+        dateTo: query.dateTo,
+      });
     }
 
-    queryBuilder
-      .orderBy('payment.createdAt', 'DESC')
-      .skip(skip)
-      .take(limit);
+    queryBuilder.orderBy('payment.createdAt', 'DESC').skip(skip).take(limit);
 
     const [items, total] = await queryBuilder.getManyAndCount();
 
     return createPaginatedResult(items, total, page, limit);
   }
 
-  async findOne(organizationId: string, paymentId: string, user: User): Promise<Payment> {
+  async findOne(
+    organizationId: string,
+    paymentId: string,
+    user: User,
+  ): Promise<Payment> {
     await this.checkMembership(organizationId, user.id);
 
     const payment = await this.paymentRepository.findOne({
       where: { id: paymentId },
-      relations: ['order', 'itemPayments', 'itemPayments.orderItem', 'processedByUser'],
+      relations: [
+        'order',
+        'itemPayments',
+        'itemPayments.orderItem',
+        'processedByUser',
+      ],
     });
 
     if (!payment || payment.order.organizationId !== organizationId) {
@@ -451,7 +508,9 @@ export class PaymentsService {
       // Revert paid quantities for split payments
       if (payment.itemPayments && payment.itemPayments.length > 0) {
         for (const itemPayment of payment.itemPayments) {
-          const orderItem = order.items.find(i => i.id === itemPayment.orderItemId);
+          const orderItem = order.items.find(
+            (i) => i.id === itemPayment.orderItemId,
+          );
           if (orderItem) {
             orderItem.paidQuantity -= itemPayment.quantity;
             if (orderItem.paidQuantity < 0) orderItem.paidQuantity = 0;
@@ -490,7 +549,10 @@ export class PaymentsService {
       const tseData = await this.tseService.reverseTransaction(
         organizationId,
         order.createdByDeviceId ?? null,
-        { amount: Number(originalPayment.amount), paymentMethod: originalPayment.paymentMethod },
+        {
+          amount: Number(originalPayment.amount),
+          paymentMethod: originalPayment.paymentMethod,
+        },
       );
       const reversal = this.paymentRepository.create({
         orderId: originalPayment.orderId,
@@ -503,7 +565,9 @@ export class PaymentsService {
       });
       await this.paymentRepository.save(reversal);
     } catch (error) {
-      this.logger.error(`TSE reversal signing failed for payment ${originalPayment.id}: ${(error as Error).message}`);
+      this.logger.error(
+        `TSE reversal signing failed for payment ${originalPayment.id}: ${(error as Error).message}`,
+      );
     }
   }
 
@@ -564,7 +628,10 @@ export class PaymentsService {
     await this.orderRepository.save(order);
   }
 
-  private async checkMembership(organizationId: string, userId: string): Promise<void> {
+  private async checkMembership(
+    organizationId: string,
+    userId: string,
+  ): Promise<void> {
     const membership = await this.userOrganizationRepository.findOne({
       where: { organizationId, userId },
     });

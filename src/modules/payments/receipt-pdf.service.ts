@@ -1,7 +1,24 @@
 import { Injectable, Logger } from '@nestjs/common';
 import PDFDocument from 'pdfkit';
 import * as QRCode from 'qrcode';
-import { Payment, Order, OrderItem, Organization } from '../../database/entities';
+import {
+  Payment,
+  Order,
+  OrderItem,
+  Organization,
+} from '../../database/entities';
+import {
+  formatCurrency,
+  formatDateTime,
+  formatOptions,
+  groupItemsByVatRate,
+  isStornoPayment,
+  paymentMethodLabel,
+  pfandLineAmount,
+} from './receipt-pdf.helpers';
+
+/** Width of the printed content column, centered on the A4 page -- mimics a physical thermal receipt rather than a full-width document. */
+const CONTENT_WIDTH = 330;
 
 /**
  * Renders a payment's receipt as a PDF — the on-screen/emailable equivalent
@@ -16,7 +33,11 @@ import { Payment, Order, OrderItem, Organization } from '../../database/entities
 export class ReceiptPdfService {
   private readonly logger = new Logger(ReceiptPdfService.name);
 
-  async generateReceiptPdf(payment: Payment, order: Order, organization: Organization | null): Promise<Buffer> {
+  async generateReceiptPdf(
+    payment: Payment,
+    order: Order,
+    organization: Organization | null,
+  ): Promise<Buffer> {
     const items = (order.items ?? []) as OrderItem[];
     const qrDataUrl = payment.tseData?.qrCodeData
       ? await this.buildQrDataUrl(payment.tseData.qrCodeData)
@@ -25,8 +46,11 @@ export class ReceiptPdfService {
     return new Promise((resolve, reject) => {
       const doc = new PDFDocument({
         size: 'A4',
-        margin: 48,
-        info: { Title: `Beleg ${order.orderNumber}`, Author: organization?.name || 'OpenEOS' },
+        margin: 0,
+        info: {
+          Title: `Beleg ${order.orderNumber}`,
+          Author: organization?.name || 'OpenEOS',
+        },
       });
 
       const chunks: Buffer[] = [];
@@ -35,11 +59,15 @@ export class ReceiptPdfService {
       doc.on('error', reject);
 
       try {
-        this.renderHeader(doc, order, organization);
-        this.renderItems(doc, items);
-        this.renderTotals(doc, order, payment);
-        this.renderTse(doc, payment, qrDataUrl);
-        this.renderFooter(doc, organization);
+        const left = (doc.page.width - CONTENT_WIDTH) / 2;
+        doc.y = 48;
+        if (isStornoPayment(payment))
+          this.renderStornoBanner(doc, left, payment);
+        this.renderHeader(doc, left, order, organization);
+        this.renderItems(doc, left, items);
+        this.renderTotals(doc, left, order, payment, items);
+        this.renderTse(doc, left, payment, qrDataUrl);
+        this.renderFooter(doc, left, organization);
       } catch (err) {
         reject(err as Error);
         return;
@@ -53,192 +81,341 @@ export class ReceiptPdfService {
     try {
       return await QRCode.toDataURL(payload, { margin: 1, width: 160 });
     } catch (error) {
-      this.logger.warn(`QR code rendering failed, omitting from receipt: ${(error as Error).message}`);
+      this.logger.warn(
+        `QR code rendering failed, omitting from receipt: ${(error as Error).message}`,
+      );
       return '';
     }
   }
 
-  private renderHeader(doc: PDFKit.PDFDocument, order: Order, organization: Organization | null): void {
-    const left = doc.page.margins.left;
-    const width = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  private divider(doc: PDFKit.PDFDocument, left: number): void {
+    doc
+      .save()
+      .dash(2, { space: 2 })
+      .moveTo(left, doc.y)
+      .lineTo(left + CONTENT_WIDTH, doc.y)
+      .lineWidth(0.75)
+      .strokeColor('#a1a1aa')
+      .stroke()
+      .undash()
+      .restore();
+    doc.moveDown(0.6);
+  }
 
-    doc.font('Helvetica-Bold').fontSize(16).fillColor('#111')
-      .text(organization?.name || 'Beleg', left, doc.y, { width });
+  private renderStornoBanner(
+    doc: PDFKit.PDFDocument,
+    left: number,
+    payment: Payment,
+  ): void {
+    doc
+      .font('Helvetica-Bold')
+      .fontSize(13)
+      .fillColor('#b91c1c')
+      .text('STORNO / KORREKTUR', left, doc.y, {
+        width: CONTENT_WIDTH,
+        align: 'center',
+      });
+    doc
+      .font('Helvetica')
+      .fontSize(8)
+      .fillColor('#7f1d1d')
+      .text(
+        `Korrektur zu Zahlung ${payment.reversesPaymentId}`,
+        left,
+        doc.y + 2,
+        { width: CONTENT_WIDTH, align: 'center' },
+      );
+    doc.moveDown(1);
+  }
+
+  private renderHeader(
+    doc: PDFKit.PDFDocument,
+    left: number,
+    order: Order,
+    organization: Organization | null,
+  ): void {
+    doc
+      .font('Helvetica-Bold')
+      .fontSize(14)
+      .fillColor('#111')
+      .text(organization?.name || 'Beleg', left, doc.y, {
+        width: CONTENT_WIDTH,
+        align: 'center',
+      });
 
     const address = organization?.settings?.address;
     if (address) {
-      doc.font('Helvetica').fontSize(9).fillColor('#555')
-        .text(`${address.street}, ${address.zip} ${address.city}`, left, doc.y + 2, { width });
+      doc
+        .font('Helvetica')
+        .fontSize(8)
+        .fillColor('#555')
+        .text(
+          `${address.street}, ${address.zip} ${address.city}`,
+          left,
+          doc.y + 2,
+          { width: CONTENT_WIDTH, align: 'center' },
+        );
     }
     if (organization?.settings?.taxId) {
-      doc.font('Helvetica').fontSize(9).fillColor('#555')
-        .text(`USt-IdNr.: ${organization.settings.taxId}`, left, doc.y + 2, { width });
+      doc
+        .font('Helvetica')
+        .fontSize(8)
+        .fillColor('#555')
+        .text(`USt-IdNr.: ${organization.settings.taxId}`, left, doc.y + 2, {
+          width: CONTENT_WIDTH,
+          align: 'center',
+        });
     }
 
-    doc.moveDown(1);
-    doc.font('Helvetica-Bold').fontSize(13).fillColor('#111')
-      .text(`Beleg ${order.orderNumber}`, left, doc.y, { width });
-    doc.font('Helvetica').fontSize(9).fillColor('#555')
-      .text(this.formatDateTime(order.createdAt), left, doc.y + 2, { width });
-
-    doc.moveDown(1);
-    doc.save().moveTo(left, doc.y).lineTo(left + width, doc.y)
-      .lineWidth(0.5).strokeColor('#d4d4d8').stroke().restore();
     doc.moveDown(0.75);
+    doc
+      .font('Helvetica-Bold')
+      .fontSize(11)
+      .fillColor('#111')
+      .text(`Beleg ${order.orderNumber}`, left, doc.y, {
+        width: CONTENT_WIDTH,
+        align: 'center',
+      });
+    doc
+      .font('Helvetica')
+      .fontSize(8)
+      .fillColor('#555')
+      .text(formatDateTime(order.createdAt), left, doc.y + 2, {
+        width: CONTENT_WIDTH,
+        align: 'center',
+      });
+
+    const context: string[] = [];
+    if (order.event?.name) context.push(order.event.name);
+    if (order.tableNumber) context.push(`Tisch ${order.tableNumber}`);
+    if (order.createdByUser)
+      context.push(
+        `${order.createdByUser.firstName} ${order.createdByUser.lastName}`,
+      );
+    if (context.length > 0) {
+      doc
+        .font('Helvetica')
+        .fontSize(8)
+        .fillColor('#777')
+        .text(context.join(' · '), left, doc.y + 2, {
+          width: CONTENT_WIDTH,
+          align: 'center',
+        });
+    }
+
+    doc.moveDown(0.75);
+    this.divider(doc, left);
   }
 
-  private renderItems(doc: PDFKit.PDFDocument, items: OrderItem[]): void {
-    const left = doc.page.margins.left;
-    const width = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-    const qtyColWidth = 30;
-    const priceColWidth = 70;
-    const nameColWidth = width - qtyColWidth - priceColWidth;
-
-    doc.font('Helvetica-Bold').fontSize(9).fillColor('#555');
-    doc.text('Menge', left, doc.y, { width: qtyColWidth });
-    doc.text('Artikel', left + qtyColWidth, doc.y - doc.currentLineHeight(), { width: nameColWidth });
-    doc.text('Preis', left + qtyColWidth + nameColWidth, doc.y - doc.currentLineHeight(), { width: priceColWidth, align: 'right' });
-    doc.moveDown(0.5);
+  private renderItems(
+    doc: PDFKit.PDFDocument,
+    left: number,
+    items: OrderItem[],
+  ): void {
+    const qtyColWidth = 24;
+    const priceColWidth = 60;
+    const nameColWidth = CONTENT_WIDTH - qtyColWidth - priceColWidth;
 
     for (const item of items) {
       const y = doc.y;
-      doc.font('Helvetica').fontSize(10).fillColor('#111');
+      doc.font('Helvetica').fontSize(9).fillColor('#111');
       doc.text(String(item.quantity), left, y, { width: qtyColWidth });
-      doc.text(item.productName, left + qtyColWidth, y, { width: nameColWidth });
-      doc.text(this.formatCurrency(item.totalPrice), left + qtyColWidth + nameColWidth, y, { width: priceColWidth, align: 'right' });
+      doc.text(item.productName, left + qtyColWidth, y, {
+        width: nameColWidth,
+      });
+      doc.text(
+        formatCurrency(item.totalPrice),
+        left + qtyColWidth + nameColWidth,
+        y,
+        { width: priceColWidth, align: 'right' },
+      );
 
-      const optionLines = this.formatOptions(item);
+      doc
+        .font('Helvetica')
+        .fontSize(7)
+        .fillColor('#999')
+        .text(
+          `${Number(item.taxRate)}%`,
+          left + qtyColWidth + nameColWidth,
+          y + 10,
+          { width: priceColWidth, align: 'right' },
+        );
+
+      const optionLines = formatOptions(item);
       if (optionLines.length > 0) {
-        doc.font('Helvetica-Oblique').fontSize(8).fillColor('#777')
-          .text(optionLines.join(', '), left + qtyColWidth, doc.y, { width: nameColWidth });
+        doc
+          .font('Helvetica-Oblique')
+          .fontSize(7)
+          .fillColor('#777')
+          .text(optionLines.join(', '), left + qtyColWidth, doc.y, {
+            width: nameColWidth,
+          });
       }
       if (item.notes) {
-        doc.font('Helvetica-Oblique').fontSize(8).fillColor('#777')
+        doc
+          .font('Helvetica-Oblique')
+          .fontSize(7)
+          .fillColor('#777')
           .text(item.notes, left + qtyColWidth, doc.y, { width: nameColWidth });
       }
-      doc.moveDown(0.4);
+
+      const pfand = pfandLineAmount(item);
+      if (pfand !== null) {
+        doc
+          .font('Helvetica')
+          .fontSize(7)
+          .fillColor('#555')
+          .text(`+ Pfand ${formatCurrency(pfand)}`, left + qtyColWidth, doc.y, {
+            width: nameColWidth + priceColWidth,
+            align: 'right',
+          });
+      }
+
+      doc.moveDown(0.5);
     }
 
-    doc.moveDown(0.5);
-    doc.save().moveTo(left, doc.y).lineTo(left + width, doc.y)
-      .lineWidth(0.5).strokeColor('#d4d4d8').stroke().restore();
-    doc.moveDown(0.75);
+    doc.moveDown(0.2);
+    this.divider(doc, left);
   }
 
-  private renderTotals(doc: PDFKit.PDFDocument, order: Order, payment: Payment): void {
-    const left = doc.page.margins.left;
-    const width = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-    const labelWidth = width - 100;
+  private renderTotals(
+    doc: PDFKit.PDFDocument,
+    left: number,
+    order: Order,
+    payment: Payment,
+    items: OrderItem[],
+  ): void {
+    const labelWidth = CONTENT_WIDTH - 90;
 
     const row = (label: string, value: string, bold = false) => {
-      doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(bold ? 11 : 10).fillColor('#111');
+      doc
+        .font(bold ? 'Helvetica-Bold' : 'Helvetica')
+        .fontSize(bold ? 10 : 9)
+        .fillColor('#111');
       doc.text(label, left, doc.y, { width: labelWidth });
-      doc.text(value, left + labelWidth, doc.y - doc.currentLineHeight(), { width: 100, align: 'right' });
+      doc.text(value, left + labelWidth, doc.y - doc.currentLineHeight(), {
+        width: 90,
+        align: 'right',
+      });
       doc.moveDown(0.3);
     };
 
-    row('Zwischensumme', this.formatCurrency(order.subtotal));
-    if (Number(order.discountAmount) > 0) {
-      row('Rabatt', `- ${this.formatCurrency(order.discountAmount)}`);
-    }
-    if (Number(order.pfandTotal) > 0) {
-      row('Pfand', this.formatCurrency(order.pfandTotal));
-    }
-    if (Number(order.taxTotal) > 0) {
-      row('MwSt.', this.formatCurrency(order.taxTotal));
-    }
-    row('Gesamt', this.formatCurrency(order.total), true);
-    doc.moveDown(0.3);
-    row(this.paymentMethodLabel(payment.paymentMethod), this.formatCurrency(payment.amount));
+    row('Zwischensumme', formatCurrency(order.subtotal));
 
-    doc.moveDown(1);
+    for (const group of groupItemsByVatRate(items)) {
+      doc
+        .font('Helvetica')
+        .fontSize(7.5)
+        .fillColor('#777')
+        .text(
+          `davon ${group.rate}% USt: ${formatCurrency(group.ust)} (netto ${formatCurrency(group.netto)})`,
+          left,
+          doc.y,
+          { width: CONTENT_WIDTH },
+        );
+      doc.moveDown(0.25);
+    }
+
+    if (Number(order.discountAmount) > 0)
+      row('Rabatt', `- ${formatCurrency(order.discountAmount)}`);
+    if (Number(order.pfandTotal) > 0)
+      row('Pfand', formatCurrency(order.pfandTotal));
+    row('Gesamt', formatCurrency(order.total), true);
+    doc.moveDown(0.3);
+    row(
+      paymentMethodLabel(payment.paymentMethod),
+      formatCurrency(payment.amount),
+    );
+
+    doc.moveDown(0.75);
   }
 
-  private renderTse(doc: PDFKit.PDFDocument, payment: Payment, qrDataUrl: string | null): void {
+  private renderTse(
+    doc: PDFKit.PDFDocument,
+    left: number,
+    payment: Payment,
+    qrDataUrl: string | null,
+  ): void {
     const tse = payment.tseData;
     if (!tse) return;
 
-    const left = doc.page.margins.left;
-    const width = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-
-    doc.save().moveTo(left, doc.y).lineTo(left + width, doc.y)
-      .lineWidth(0.5).strokeColor('#d4d4d8').stroke().restore();
-    doc.moveDown(0.75);
+    this.divider(doc, left);
 
     if (tse.failed) {
-      doc.font('Helvetica-Bold').fontSize(9).fillColor('#b91c1c')
-        .text('TSE-Signatur nicht verfügbar (Ausfall gemäß BMF-Ausfallregelung).', left, doc.y, { width });
+      doc
+        .font('Helvetica-Bold')
+        .fontSize(8)
+        .fillColor('#b91c1c')
+        .text(
+          'TSE-Signatur nicht verfügbar (Ausfall gemäß BMF-Ausfallregelung).',
+          left,
+          doc.y,
+          { width: CONTENT_WIDTH },
+        );
       doc.moveDown(0.75);
       return;
     }
 
-    const textWidth = qrDataUrl ? width - 130 : width;
+    const textWidth = qrDataUrl ? CONTENT_WIDTH - 120 : CONTENT_WIDTH;
     const startY = doc.y;
 
-    doc.font('Helvetica').fontSize(8).fillColor('#555');
-    doc.text(`Transaktion: ${tse.transactionNumber}`, left, doc.y, { width: textWidth });
-    doc.text(`Kassen-Seriennummer: ${tse.serialNumber}`, left, doc.y, { width: textWidth });
-    doc.text(`Signaturzähler: ${tse.signatureCounter}`, left, doc.y, { width: textWidth });
-    doc.text(`Zeit: ${this.formatDateTime(tse.startTime)} – ${this.formatDateTime(tse.endTime)}`, left, doc.y, { width: textWidth });
-    doc.text(`Signatur: ${tse.signatureValue.slice(0, 40)}…`, left, doc.y, { width: textWidth });
+    doc.font('Helvetica').fontSize(7).fillColor('#555');
+    doc.text(`Transaktion: ${tse.transactionNumber}`, left, doc.y, {
+      width: textWidth,
+    });
+    doc.text(`Kassen-Seriennummer: ${tse.serialNumber}`, left, doc.y, {
+      width: textWidth,
+    });
+    doc.text(`Signaturzähler: ${tse.signatureCounter}`, left, doc.y, {
+      width: textWidth,
+    });
+    doc.text(
+      `Zeit: ${formatDateTime(tse.startTime)} – ${formatDateTime(tse.endTime)}`,
+      left,
+      doc.y,
+      { width: textWidth },
+    );
+    doc.text(`Signatur: ${tse.signatureValue.slice(0, 32)}…`, left, doc.y, {
+      width: textWidth,
+    });
 
     if (qrDataUrl) {
       const base64 = qrDataUrl.split(',')[1];
-      doc.image(Buffer.from(base64, 'base64'), left + textWidth + 10, startY, { width: 110, height: 110 });
+      doc.image(Buffer.from(base64, 'base64'), left + textWidth + 10, startY, {
+        width: 100,
+        height: 100,
+      });
     }
 
     doc.moveDown(1);
   }
 
-  private renderFooter(doc: PDFKit.PDFDocument, organization: Organization | null): void {
-    const left = doc.page.margins.left;
-    const width = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-
+  private renderFooter(
+    doc: PDFKit.PDFDocument,
+    left: number,
+    organization: Organization | null,
+  ): void {
     const footerText = organization?.settings?.receipt?.footerText;
     if (footerText) {
-      doc.font('Helvetica').fontSize(9).fillColor('#555').text(footerText, left, doc.y, { width, align: 'center' });
+      doc
+        .font('Helvetica')
+        .fontSize(8)
+        .fillColor('#555')
+        .text(footerText, left, doc.y, {
+          width: CONTENT_WIDTH,
+          align: 'center',
+        });
       doc.moveDown(0.5);
     }
-    doc.font('Helvetica').fontSize(7).fillColor('#999')
-      .text('Dieser Beleg wurde elektronisch erzeugt und dient als Kassenbeleg gemäß § 146a AO.', left, doc.y, { width, align: 'center' });
-  }
-
-  private formatOptions(item: OrderItem): string[] {
-    const selected =
-      (item.options as {
-        selected?: Array<{ option?: string; excluded?: boolean; priceModifier?: number }>;
-      } | null)?.selected ?? [];
-    return selected
-      .map((o) => {
-        const name = o.option ?? '';
-        if (!name) return '';
-        if (o.excluded) return `ohne ${name}`;
-        if (Number(o.priceModifier) > 0) return `+ ${name}`;
-        return name;
-      })
-      .filter(Boolean);
-  }
-
-  private formatCurrency(amount: number | string): string {
-    return `${Number(amount).toFixed(2)} €`;
-  }
-
-  private paymentMethodLabel(method: string): string {
-    const labels: Record<string, string> = {
-      cash: 'Bar bezahlt',
-      card: 'Karte bezahlt',
-      sumup_terminal: 'Karte bezahlt',
-      sumup_online: 'Online bezahlt',
-    };
-    return labels[method] || 'Bezahlt';
-  }
-
-  private formatDateTime(value: string | Date): string {
-    const date = typeof value === 'string' ? new Date(value) : value;
-    return date.toLocaleString('de-DE', {
-      day: '2-digit', month: '2-digit', year: 'numeric',
-      hour: '2-digit', minute: '2-digit',
-      timeZone: 'Europe/Berlin',
-    });
+    doc
+      .font('Helvetica')
+      .fontSize(7)
+      .fillColor('#999')
+      .text(
+        'Dieser Beleg wurde elektronisch erzeugt und dient als Kassenbeleg gemäß § 146a AO.',
+        left,
+        doc.y,
+        { width: CONTENT_WIDTH, align: 'center' },
+      );
   }
 }
