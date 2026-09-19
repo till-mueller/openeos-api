@@ -115,4 +115,40 @@ export class PaymentsController {
     }
     return this.paymentsService.emailReceipt(organizationId, paymentId, body.email, user);
   }
+
+  /**
+   * Same receipt, plus an appended blank-lines Bewirtungsbeleg section
+   * (§ 4 Abs. 5 Nr. 2 EStG) to fill in and sign by hand. Available for any
+   * order regardless of whether the checkout toggle was used.
+   */
+  @Get(':paymentId/bewirtungsbeleg')
+  async getBewirtungsbeleg(
+    @Param('organizationId', ParseUUIDPipe) organizationId: string,
+    @Param('paymentId', ParseUUIDPipe) paymentId: string,
+    @CurrentUser() user: User,
+    @Res() res: unknown,
+  ) {
+    const { data, filename } = await this.paymentsService.getBewirtungsbelegPdf(organizationId, paymentId, user);
+    const response = res as Response;
+    response.setHeader('Content-Type', 'application/pdf');
+    response.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    response.send(data);
+  }
+
+  @Post(':paymentId/bewirtungsbeleg/email')
+  @HttpCode(HttpStatus.OK)
+  emailBewirtungsbeleg(
+    @Param('organizationId', ParseUUIDPipe) organizationId: string,
+    @Param('paymentId', ParseUUIDPipe) paymentId: string,
+    @Body() body: { email: string },
+    @CurrentUser() user: User,
+  ) {
+    if (!body.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email)) {
+      throw new BadRequestException({
+        code: 'VALIDATION_ERROR',
+        message: 'Gültige E-Mail-Adresse erforderlich',
+      });
+    }
+    return this.paymentsService.emailBewirtungsbeleg(organizationId, paymentId, body.email, user);
+  }
 }

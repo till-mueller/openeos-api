@@ -132,3 +132,81 @@ describe('ReceiptPdfService', () => {
     expect(pdfFailed.length).toBeGreaterThan(0);
   });
 });
+
+describe('ReceiptPdfService.generateBewirtungsbelegPdf', () => {
+  const service = new ReceiptPdfService();
+
+  const organization = {
+    id: 'org-1',
+    name: 'Verein e.V.',
+    settings: {
+      address: {
+        street: 'Hauptstr. 1',
+        city: 'Berlin',
+        zip: '10115',
+        country: 'DE',
+      },
+      taxId: 'DE123456789',
+    },
+  } as unknown as Organization;
+
+  const order = {
+    id: 'order-1',
+    orderNumber: 'A-1',
+    subtotal: 8.5,
+    discountAmount: 0,
+    pfandTotal: 0,
+    taxTotal: 1.14,
+    total: 8.5,
+    tipAmount: 0,
+    createdAt: new Date('2026-09-19T10:00:00Z'),
+    items: [
+      {
+        id: 'item-1',
+        productName: 'Bier',
+        quantity: 2,
+        unitPrice: 4.25,
+        optionsPrice: 0,
+        totalPrice: 8.5,
+        taxRate: 19,
+        depositAmount: 0,
+        notes: null,
+        options: { selected: [] },
+      } as unknown as OrderItem,
+    ],
+  } as unknown as Order;
+
+  const payment = {
+    id: 'payment-1',
+    amount: 8.5,
+    paymentMethod: PaymentMethod.CASH,
+    status: PaymentTransactionStatus.CAPTURED,
+    reversesPaymentId: null,
+    tseData: null,
+  } as unknown as Payment;
+
+  it('generates a valid, non-empty PDF', async () => {
+    const pdf = await service.generateBewirtungsbelegPdf(
+      payment,
+      order,
+      organization,
+    );
+    expect(pdf.subarray(0, 4).toString()).toBe('%PDF');
+    expect(pdf.length).toBeGreaterThan(0);
+  });
+
+  it('does not throw when the order has a tip', async () => {
+    const withTip = { ...order, tipAmount: 2 } as unknown as Order;
+    const pdf = await service.generateBewirtungsbelegPdf(
+      payment,
+      withTip,
+      organization,
+    );
+    expect(pdf.length).toBeGreaterThan(0);
+  });
+
+  it('handles a null organization gracefully', async () => {
+    const pdf = await service.generateBewirtungsbelegPdf(payment, order, null);
+    expect(pdf.length).toBeGreaterThan(0);
+  });
+});

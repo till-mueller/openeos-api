@@ -148,6 +148,40 @@ export class PaymentsService {
     return { ok: true };
   }
 
+  async getBewirtungsbelegPdf(
+    organizationId: string,
+    paymentId: string,
+    user: User,
+  ): Promise<{ data: Buffer; filename: string }> {
+    const { payment, order, organization } = await this.getPaymentForReceipt(organizationId, paymentId, user);
+    const data = await this.receiptPdfService.generateBewirtungsbelegPdf(payment, order, organization);
+    return { data, filename: `bewirtungsbeleg-${order.orderNumber}.pdf` };
+  }
+
+  async emailBewirtungsbeleg(
+    organizationId: string,
+    paymentId: string,
+    email: string,
+    user: User,
+  ): Promise<{ ok: boolean; message?: string }> {
+    const { payment, order, organization } = await this.getPaymentForReceipt(organizationId, paymentId, user);
+    const pdf = await this.receiptPdfService.generateBewirtungsbelegPdf(payment, order, organization);
+    const sent = await this.emailService.sendReceiptEmail({
+      to: email,
+      organizationName: organization?.name || 'OpenEOS',
+      orderNumber: order.orderNumber,
+      pdf,
+      filename: `bewirtungsbeleg-${order.orderNumber}.pdf`,
+    });
+    if (!sent) {
+      return { ok: false, message: 'E-Mail-Versand fehlgeschlagen' };
+    }
+    this.logger.log(
+      `Bewirtungsbeleg for order ${order.orderNumber} emailed to ${email} by user ${user.id}`,
+    );
+    return { ok: true };
+  }
+
   /**
    * Sign the captured payment through the org's TSE and persist the result.
    * Best-effort: never throws — a TSE outage must not block the sale (see
@@ -228,6 +262,11 @@ export class PaymentsService {
 
     // Update order paid amount
     order.paidAmount = Number(order.paidAmount) + createDto.amount;
+    // Sticky: once requested, stays requested even if a later split payment
+    // on the same order omits the flag -- never silently undoes a "yes".
+    if (createDto.bewirtungsbelegRequested) {
+      order.bewirtungsbelegRequested = true;
+    }
     await this.updateOrderPaymentStatus(order);
 
     // For full payment, mark all items as paid

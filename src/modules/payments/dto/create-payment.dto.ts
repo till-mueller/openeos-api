@@ -4,6 +4,7 @@ import {
   IsEnum,
   IsOptional,
   IsString,
+  IsBoolean,
   Min,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
@@ -31,4 +32,9 @@ export class CreatePaymentDto {
   @ApiPropertyOptional({ example: { terminalId: 'T001', receiptNumber: '12345' }, description: 'Zusätzliche Metadaten' })
   @IsOptional()
   metadata?: Record<string, unknown>;
+
+  @ApiPropertyOptional({ example: true, description: 'Bewirtungsbeleg für diese Bestellung angefordert' })
+  @IsOptional()
+  @IsBoolean()
+  bewirtungsbelegRequested?: boolean;
 }

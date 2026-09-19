@@ -11,7 +11,7 @@ describe('PaymentsService — TSE hook in create()', () => {
   let organizationRepository: { findOne: jest.Mock };
   let orderPrintService: { handlePaymentReceived: jest.Mock };
   let tseService: { recordTransaction: jest.Mock; reverseTransaction: jest.Mock };
-  let receiptPdfService: { generateReceiptPdf: jest.Mock };
+  let receiptPdfService: { generateReceiptPdf: jest.Mock; generateBewirtungsbelegPdf: jest.Mock };
   let emailService: { sendReceiptEmail: jest.Mock };
   let service: PaymentsService;
 
@@ -49,7 +49,7 @@ describe('PaymentsService — TSE hook in create()', () => {
     organizationRepository = { findOne: jest.fn().mockResolvedValue({ id: ORG_ID, name: 'Org', settings: {} }) };
     orderPrintService = { handlePaymentReceived: jest.fn().mockResolvedValue(undefined) };
     tseService = { recordTransaction: jest.fn(), reverseTransaction: jest.fn() };
-    receiptPdfService = { generateReceiptPdf: jest.fn() };
+    receiptPdfService = { generateReceiptPdf: jest.fn(), generateBewirtungsbelegPdf: jest.fn() };
     emailService = { sendReceiptEmail: jest.fn() };
 
     service = new PaymentsService(
@@ -135,6 +135,38 @@ describe('PaymentsService — TSE hook in create()', () => {
     await service.create(ORG_ID, createDto, user);
 
     expect(tseService.recordTransaction).toHaveBeenCalledWith(ORG_ID, null, expect.anything());
+  });
+
+  describe('bewirtungsbelegRequested', () => {
+    it('sets the flag on the order when the checkout toggle is passed', async () => {
+      orderRepository.findOne.mockResolvedValue(baseOrder());
+      tseService.recordTransaction.mockResolvedValue(null);
+
+      await service.create(ORG_ID, { ...createDto, bewirtungsbelegRequested: true }, user);
+
+      const savedOrder = orderRepository.save.mock.calls[0][0];
+      expect(savedOrder.bewirtungsbelegRequested).toBe(true);
+    });
+
+    it('leaves the flag untouched (does not reset to false) when a later payment omits it', async () => {
+      orderRepository.findOne.mockResolvedValue({ ...baseOrder(), bewirtungsbelegRequested: true });
+      tseService.recordTransaction.mockResolvedValue(null);
+
+      await service.create(ORG_ID, createDto, user);
+
+      const savedOrder = orderRepository.save.mock.calls[0][0];
+      expect(savedOrder.bewirtungsbelegRequested).toBe(true);
+    });
+
+    it('leaves the flag false when never requested', async () => {
+      orderRepository.findOne.mockResolvedValue(baseOrder());
+      tseService.recordTransaction.mockResolvedValue(null);
+
+      await service.create(ORG_ID, createDto, user);
+
+      const savedOrder = orderRepository.save.mock.calls[0][0];
+      expect(savedOrder.bewirtungsbelegRequested).toBeFalsy();
+    });
   });
 
   describe('refund', () => {

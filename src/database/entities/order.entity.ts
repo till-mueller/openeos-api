@@ -145,6 +145,14 @@ export class Order extends SoftDeleteEntity {
   @Column({ name: 'cancellation_reason', type: 'varchar', length: 255, nullable: true })
   cancellationReason: string | null;
 
+  /**
+   * Sticky once true -- set when checkout requests a Bewirtungsbeleg (or via
+   * the standalone endpoint), never reset by a later split payment that
+   * omits the flag.
+   */
+  @Column({ name: 'bewirtungsbeleg_requested', type: 'boolean', default: false })
+  bewirtungsbelegRequested: boolean;
+
   @Column({ name: 'created_by_user_id', type: 'uuid', nullable: true })
   createdByUserId: string | null;
 

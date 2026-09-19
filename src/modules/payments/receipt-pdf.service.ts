@@ -38,6 +38,48 @@ export class ReceiptPdfService {
     order: Order,
     organization: Organization | null,
   ): Promise<Buffer> {
+    return this.render(
+      `Beleg ${order.orderNumber}`,
+      payment,
+      order,
+      organization,
+      (doc, left) => {
+        this.renderFooter(doc, left, organization);
+      },
+    );
+  }
+
+  /**
+   * The same itemized receipt, with an appended Bewirtungsbeleg section per
+   * § 4 Abs. 5 Nr. 2 EStG. Deliberately no new data capture: attendees,
+   * business purpose, and the host's signature are left as blank lines to
+   * fill in by hand -- matches how a physical Bewirtungsbeleg pad works,
+   * and needs nothing stored beyond the existing order/payment data.
+   */
+  async generateBewirtungsbelegPdf(
+    payment: Payment,
+    order: Order,
+    organization: Organization | null,
+  ): Promise<Buffer> {
+    return this.render(
+      `Bewirtungsbeleg ${order.orderNumber}`,
+      payment,
+      order,
+      organization,
+      (doc, left) => {
+        this.renderBewirtungsbelegSection(doc, left, order, organization);
+        this.renderFooter(doc, left, organization);
+      },
+    );
+  }
+
+  private async render(
+    title: string,
+    payment: Payment,
+    order: Order,
+    organization: Organization | null,
+    renderExtra: (doc: PDFKit.PDFDocument, left: number) => void,
+  ): Promise<Buffer> {
     const items = (order.items ?? []) as OrderItem[];
     const qrDataUrl = payment.tseData?.qrCodeData
       ? await this.buildQrDataUrl(payment.tseData.qrCodeData)
@@ -47,10 +89,7 @@ export class ReceiptPdfService {
       const doc = new PDFDocument({
         size: 'A4',
         margin: 0,
-        info: {
-          Title: `Beleg ${order.orderNumber}`,
-          Author: organization?.name || 'OpenEOS',
-        },
+        info: { Title: title, Author: organization?.name || 'OpenEOS' },
       });
 
       const chunks: Buffer[] = [];
@@ -67,7 +106,7 @@ export class ReceiptPdfService {
         this.renderItems(doc, left, items);
         this.renderTotals(doc, left, order, payment, items);
         this.renderTse(doc, left, payment, qrDataUrl);
-        this.renderFooter(doc, left, organization);
+        renderExtra(doc, left);
       } catch (err) {
         reject(err as Error);
         return;
@@ -388,6 +427,91 @@ export class ReceiptPdfService {
     }
 
     doc.moveDown(1);
+  }
+
+  /**
+   * Blank-lines section per § 4 Abs. 5 Nr. 2 EStG / R 4.10 EStR: venue and
+   * date are already known (shown above, in the header), so only what
+   * genuinely can't be known at print time is left blank -- who attended,
+   * why, on whose behalf, and the host's signature. Trinkgeld gets its own
+   * explicit line when present, since it needs separate treatment on a
+   * Bewirtungsbeleg per BMF guidance, not folded into the total above.
+   */
+  private renderBewirtungsbelegSection(
+    doc: PDFKit.PDFDocument,
+    left: number,
+    order: Order,
+    organization: Organization | null,
+  ): void {
+    this.divider(doc, left);
+
+    doc
+      .font('Helvetica-Bold')
+      .fontSize(10)
+      .fillColor('#111')
+      .text('Bewirtungsbeleg gem. § 4 Abs. 5 Nr. 2 EStG', left, doc.y, {
+        width: CONTENT_WIDTH,
+        align: 'center',
+      });
+    doc.moveDown(0.75);
+
+    const address = organization?.settings?.address;
+    const venue = organization?.name
+      ? `${organization.name}${address ? `, ${address.street}, ${address.zip} ${address.city}` : ''}`
+      : '';
+    this.blankField(doc, left, 'Ort der Bewirtung', venue);
+    this.blankField(doc, left, 'Tag der Bewirtung', formatDateTime(order.createdAt).split(',')[0]);
+    this.blankField(doc, left, 'Anlass der Bewirtung');
+    this.blankField(doc, left, 'Bewirtende Firma / Rechnungsempfänger');
+    this.blankField(doc, left, 'Teilnehmer');
+    this.blankField(doc, left);
+    this.blankField(doc, left);
+
+    if (Number(order.tipAmount) > 0) {
+      doc
+        .font('Helvetica')
+        .fontSize(9)
+        .fillColor('#111')
+        .text(`Trinkgeld: ${formatCurrency(order.tipAmount)}`, left, doc.y, {
+          width: CONTENT_WIDTH,
+        });
+      doc.moveDown(0.6);
+    }
+
+    doc.moveDown(0.5);
+    this.blankField(doc, left, 'Ort, Datum, Unterschrift');
+    doc.moveDown(0.5);
+  }
+
+  /** One label + an underline to fill in by hand. Omit the label for a plain continuation line (e.g. a second row of attendee names). */
+  private blankField(doc: PDFKit.PDFDocument, left: number, label?: string, prefill = ''): void {
+    if (label) {
+      doc
+        .font('Helvetica')
+        .fontSize(8)
+        .fillColor('#555')
+        .text(`${label}:`, left, doc.y, { width: CONTENT_WIDTH });
+      doc.moveDown(0.15);
+    }
+    const y = doc.y + 8;
+    if (prefill) {
+      doc
+        .font('Helvetica')
+        .fontSize(9)
+        .fillColor('#111')
+        .text(prefill, left, doc.y, { width: CONTENT_WIDTH });
+    } else {
+      doc
+        .save()
+        .moveTo(left, y)
+        .lineTo(left + CONTENT_WIDTH, y)
+        .lineWidth(0.5)
+        .strokeColor('#111')
+        .stroke()
+        .restore();
+      doc.y = y;
+    }
+    doc.moveDown(0.9);
   }
 
   private renderFooter(
