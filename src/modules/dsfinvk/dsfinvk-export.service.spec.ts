@@ -96,13 +96,24 @@ describe('DsfinvkExportService', () => {
     };
     closingRepository = { findOne: jest.fn().mockResolvedValue(null) };
     dataSource = {
+      // A raw dataSource.query() `RETURNING *` gives back the table's
+      // actual (snake_case) column names, never camelCase -- this must
+      // stay snake_case or it stops catching #dsfinvk-zNr-undefined-style
+      // regressions where allocateClosing forgets to map the row.
       query: jest.fn().mockResolvedValue([
         {
           id: 'closing-1',
-          zNr: 1,
+          organization_id: ORG_ID,
+          event_id: EVENT_ID,
+          device_id: DEVICE_ID,
+          z_nr: 1,
           erstellung: '2026-09-19T11:00:00.000Z',
-          startBonId: 'order-1',
-          endBonId: 'order-1',
+          start_bon_id: 'order-1',
+          end_bon_id: 'order-1',
+          period_start: new Date('2026-09-19T08:00:00Z'),
+          period_end: new Date('2026-09-19T11:00:00Z'),
+          created_at: new Date('2026-09-19T11:00:00Z'),
+          updated_at: new Date('2026-09-19T11:00:00Z'),
         },
       ]),
     };
@@ -151,6 +162,20 @@ describe('DsfinvkExportService', () => {
     );
     expect(result.filename).toMatch(/^dsfinvk-.*\.zip$/);
     expect(result.data.subarray(0, 2).toString('hex')).toBe('504b');
+  });
+
+  it('carries a real numeric Z_NR into the filename, not "undefined"', async () => {
+    // Regression test: allocateClosing's raw dataSource.query() result is
+    // snake_case (z_nr), and the filename/ctx build off closing.zNr -- if
+    // that mapping is ever dropped again, this fails loudly instead of
+    // silently shipping "-zundefined.zip" to every export.
+    const result = await service.generateExport(
+      ORG_ID,
+      EVENT_ID,
+      DEVICE_ID,
+      USER_ID,
+    );
+    expect(result.filename).toMatch(/-z\d+\.zip$/);
   });
 
   it('skips an order that was never actually paid (no captured payment)', async () => {

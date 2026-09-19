@@ -75,6 +75,12 @@ async function bootstrap() {
       'X-Request-Id',
       'Accept-Language',
     ],
+    // Content-Disposition isn't on the CORS response-header safelist, so
+    // without this a cross-origin fetch() (web + api on different ports
+    // here) can never read the filename the server allocated -- every
+    // file-download endpoint (tse/export, dsfinvk export) silently falls
+    // back to its client-side generic filename instead.
+    exposedHeaders: ['Content-Disposition'],
   });
 
   // Global Exception Filter

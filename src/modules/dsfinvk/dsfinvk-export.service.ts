@@ -552,7 +552,28 @@ export class DsfinvkExportService {
     // concurrent export for the same device either gets a genuinely
     // different number or fails the UNIQUE(device_id, z_nr) constraint --
     // it can never silently duplicate one.
-    const rows: DsfinvkClosing[] = await this.dataSource.query(
+    //
+    // dataSource.query() is a raw driver call, not a Repository/QueryBuilder
+    // read -- it does NOT go through TypeORM's entity metadata, so the
+    // returned row has the table's actual (snake_case) column names, not
+    // the entity's camelCase property names. Mapping explicitly here so
+    // every caller of this method can trust it really returns a
+    // DsfinvkClosing, not a same-shaped-looking row with undefined zNr.
+    interface DsfinvkClosingRow {
+      id: string;
+      organization_id: string;
+      event_id: string;
+      device_id: string;
+      z_nr: number;
+      erstellung: string;
+      start_bon_id: string;
+      end_bon_id: string;
+      period_start: Date;
+      period_end: Date;
+      created_at: Date;
+      updated_at: Date;
+    }
+    const rows: DsfinvkClosingRow[] = await this.dataSource.query(
       `INSERT INTO dsfinvk_closings
          (organization_id, event_id, device_id, z_nr, erstellung, start_bon_id, end_bon_id, period_start, period_end)
        VALUES ($1, $2, $3, (SELECT COALESCE(MAX(z_nr), 0) + 1 FROM dsfinvk_closings WHERE device_id = $3), $4, $5, $6, $7, $8)
@@ -568,7 +589,21 @@ export class DsfinvkExportService {
         periodEnd,
       ],
     );
-    return rows[0];
+    const row = rows[0];
+    return {
+      id: row.id,
+      organizationId: row.organization_id,
+      eventId: row.event_id,
+      deviceId: row.device_id,
+      zNr: row.z_nr,
+      erstellung: row.erstellung,
+      startBonId: row.start_bon_id,
+      endBonId: row.end_bon_id,
+      periodStart: row.period_start,
+      periodEnd: row.period_end,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    } as DsfinvkClosing;
   }
 
   private async checkMembership(
