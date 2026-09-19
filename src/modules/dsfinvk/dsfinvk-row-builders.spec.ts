@@ -1,5 +1,7 @@
 import {
+  buildBusinessCaseRows,
   buildCashPerCurrencyRow,
+  buildCashpointclosingRow,
   buildCashregisterRow,
   buildLocationRow,
   buildPaymentRows,
@@ -44,6 +46,39 @@ describe('buildLocationRow', () => {
       settings: {} as any,
     });
     expect(row.LOC_LAND).toBe('DEU');
+  });
+});
+
+describe('buildCashpointclosingRow', () => {
+  const org = {
+    name: 'Verein e.V.',
+    settings: {
+      address: {
+        street: 'Hauptstr. 1',
+        city: 'Berlin',
+        zip: '10115',
+        country: 'DE',
+      },
+      taxId: 'DE123456789',
+    } as any,
+  };
+
+  it('sums total and cash-only payments, and pins the schema version this export was built against', () => {
+    const row = buildCashpointclosingRow(ctx, org, {
+      startBonId: 'order-1',
+      endBonId: 'order-9',
+      bookingDay: '2026-09-19',
+      payments: [
+        { paymentMethod: PaymentMethod.CASH, amount: 20 },
+        { paymentMethod: PaymentMethod.CARD, amount: 30 },
+      ],
+    });
+    expect(row.TAXONOMIE_VERSION).toBe('2.4');
+    expect(row.Z_START_ID).toBe('order-1');
+    expect(row.Z_ENDE_ID).toBe('order-9');
+    expect(row.Z_SE_ZAHLUNGEN).toBe(50);
+    expect(row.Z_SE_BARZAHLUNGEN).toBe(20);
+    expect(row.USTID).toBe('DE123456789');
   });
 });
 
@@ -152,6 +187,53 @@ describe('buildCashPerCurrencyRow', () => {
       { paymentMethod: PaymentMethod.CARD, amount: 100 },
     ]);
     expect(row.ZAHLART_BETRAG_WAEH).toBe(0);
+  });
+});
+
+describe('buildBusinessCaseRows', () => {
+  it('sums brutto per (GV_TYP, UST_SCHLUESSEL) and splits it into netto/UST', () => {
+    const rows = buildBusinessCaseRows(ctx, [
+      {
+        gvTyp: 'Umsatz',
+        ustSchluessel: UstSchluessel.ALLGEMEIN,
+        ustSatz: 19,
+        brutto: 119,
+      },
+      {
+        gvTyp: 'Umsatz',
+        ustSchluessel: UstSchluessel.ALLGEMEIN,
+        ustSatz: 19,
+        brutto: 11.9,
+      },
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual(
+      expect.objectContaining({
+        GV_TYP: 'Umsatz',
+        AGENTUR_ID: 0,
+        Z_UMS_BRUTTO: 130.9,
+        Z_UMS_NETTO: 110,
+        Z_UST: 20.9,
+      }),
+    );
+  });
+
+  it('keeps different GV_TYP/UST_SCHLUESSEL combinations as separate rows', () => {
+    const rows = buildBusinessCaseRows(ctx, [
+      {
+        gvTyp: 'Umsatz',
+        ustSchluessel: UstSchluessel.ALLGEMEIN,
+        ustSatz: 19,
+        brutto: 119,
+      },
+      {
+        gvTyp: 'Pfand',
+        ustSchluessel: UstSchluessel.ALLGEMEIN,
+        ustSatz: 19,
+        brutto: 5,
+      },
+    ]);
+    expect(rows.map((r) => r.GV_TYP).sort()).toEqual(['Pfand', 'Umsatz']);
   });
 });
 

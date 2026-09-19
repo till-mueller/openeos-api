@@ -70,6 +70,47 @@ export function buildLocationRow(
 }
 
 /**
+ * cashpointclosing.csv: the one master-data row identifying this specific
+ * Kassenabschluss. TAXONOMIE_VERSION is hardcoded to "2.4" -- the DSFinV-K
+ * version this whole schema (dsfinvk-schema.ts) was generated against;
+ * bump both together if the spec version ever changes. Z_START_ID/Z_ENDE_ID
+ * are the first/last Vorgangs-ID (Order id) folded into this closing, per
+ * the spec's literal definition -- not a count, not a device id.
+ */
+export function buildCashpointclosingRow(
+  ctx: ClosingContext,
+  org: { name: string; settings: OrganizationSettings },
+  period: {
+    startBonId: string;
+    endBonId: string;
+    bookingDay: string;
+    payments: { paymentMethod: PaymentMethod; amount: number }[];
+  },
+): DsfinvkRow {
+  const address = org.settings.address;
+  const totalPayments = period.payments.reduce((sum, p) => sum + p.amount, 0);
+  const cashPayments = period.payments
+    .filter((p) => p.paymentMethod === PaymentMethod.CASH)
+    .reduce((sum, p) => sum + p.amount, 0);
+  return {
+    ...closingKey(ctx),
+    Z_BUCHUNGSTAG: period.bookingDay,
+    TAXONOMIE_VERSION: '2.4',
+    Z_START_ID: period.startBonId,
+    Z_ENDE_ID: period.endBonId,
+    NAME: org.name,
+    STRASSE: address?.street ?? '',
+    PLZ: address?.zip ?? '',
+    ORT: address?.city ?? '',
+    LAND: address?.country ? toAlpha3CountryCode(address.country) : 'DEU',
+    STNR: '',
+    USTID: org.settings.taxId ?? '',
+    Z_SE_ZAHLUNGEN: totalPayments,
+    Z_SE_BARZAHLUNGEN: cashPayments,
+  };
+}
+
+/**
  * cashregister.csv: openEOS is EUR-only, so KASSE_BASISWAEH_CODE is always
  * 'EUR'. KEINE_UST_ZUORDNUNG flags a till whose VAT can only be determined
  * once a later payment arrives (invoicing/Anzahlung) -- openEOS has no such
@@ -204,6 +245,68 @@ export function buildCashPerCurrencyRow(
     ZAHLART_WAEH: 'EUR',
     ZAHLART_BETRAG_WAEH: cashTotal,
   };
+}
+
+export interface BusinessCaseLine {
+  gvTyp: string;
+  ustSchluessel: UstSchluessel;
+  ustSatz: number;
+  /** Gross (brutto) amount for this line, in EUR. */
+  brutto: number;
+}
+
+/**
+ * businesscases.csv: one row per (GV_TYP, UST_SCHLUESSEL) pair actually used
+ * in the period, brutto/netto/UST summed. AGENTUR_ID is always 0 -- openEOS
+ * has no agency/Vermittlung concept, and the spec requires 0 (not blank)
+ * when a business case isn't agency-related. Amounts are rounded to cents
+ * per line before summing, matching how the source amounts already exist
+ * as currency values -- not rounded only at the end, which could silently
+ * drift from what businesscases.csv is meant to foot against payment.csv.
+ */
+export function buildBusinessCaseRows(
+  ctx: ClosingContext,
+  lines: BusinessCaseLine[],
+): DsfinvkRow[] {
+  const totals = new Map<
+    string,
+    {
+      gvTyp: string;
+      ustSchluessel: UstSchluessel;
+      ustSatz: number;
+      brutto: number;
+    }
+  >();
+  for (const line of lines) {
+    const key = `${line.gvTyp}::${line.ustSchluessel}`;
+    const existing = totals.get(key);
+    if (existing) {
+      existing.brutto += line.brutto;
+    } else {
+      totals.set(key, {
+        gvTyp: line.gvTyp,
+        ustSchluessel: line.ustSchluessel,
+        ustSatz: line.ustSatz,
+        brutto: line.brutto,
+      });
+    }
+  }
+  return Array.from(totals.values()).map(
+    ({ gvTyp, ustSchluessel, ustSatz, brutto }) => {
+      const netto = Math.round((brutto / (1 + ustSatz / 100)) * 100) / 100;
+      const ust = Math.round((brutto - netto) * 100) / 100;
+      return {
+        ...closingKey(ctx),
+        GV_TYP: gvTyp,
+        GV_NAME: '',
+        AGENTUR_ID: 0,
+        UST_SCHLUESSEL: ustSchluessel,
+        Z_UMS_BRUTTO: Math.round(brutto * 100) / 100,
+        Z_UMS_NETTO: netto,
+        Z_UST: ust,
+      };
+    },
+  );
 }
 
 /**
