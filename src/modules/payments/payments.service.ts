@@ -7,6 +7,8 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
 import {
   Payment,
   Order,
@@ -44,6 +46,8 @@ import {
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
+  private readonly RECEIPT_LINK_TTL = '48h';
+  private readonly RECEIPT_LINK_TTL_MS = 48 * 60 * 60 * 1000;
 
   constructor(
     @InjectRepository(Payment)
@@ -64,6 +68,8 @@ export class PaymentsService {
     private readonly emailService: EmailService,
     @InjectRepository(OrderAuditLog)
     private readonly orderAuditLogRepository: Repository<OrderAuditLog>,
+    private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
   ) {}
 
   /**
@@ -73,17 +79,21 @@ export class PaymentsService {
    * deliberately independent from here on. An admin can always see what a
    * customer was (or wasn't) handed.
    */
-  private async getPaymentForReceipt(
+  /**
+   * The org-membership-free core of the receipt lookup -- shared by the
+   * dashboard (JWT user), device-api (device-token, already org-scoped by
+   * DeviceAuthGuard) and the public QR-link endpoint (no auth at all, the
+   * signed token itself is the authorization). Callers that DO have a user
+   * to check membership against use getPaymentForReceipt below instead.
+   */
+  private async getPaymentForReceiptCore(
     organizationId: string,
     paymentId: string,
-    user: User,
   ): Promise<{
     payment: Payment;
     order: Order;
     organization: Organization | null;
   }> {
-    await this.checkMembership(organizationId, user.id);
-
     const payment = await this.paymentRepository.findOne({
       where: { id: paymentId },
       relations: ['order', 'order.items', 'order.event', 'order.createdByUser'],
@@ -100,6 +110,19 @@ export class PaymentsService {
     });
 
     return { payment, order: payment.order, organization };
+  }
+
+  private async getPaymentForReceipt(
+    organizationId: string,
+    paymentId: string,
+    user: User,
+  ): Promise<{
+    payment: Payment;
+    order: Order;
+    organization: Organization | null;
+  }> {
+    await this.checkMembership(organizationId, user.id);
+    return this.getPaymentForReceiptCore(organizationId, paymentId);
   }
 
   async getReceiptPdf(
@@ -155,6 +178,91 @@ export class PaymentsService {
       `Receipt for order ${order.orderNumber} emailed to ${email} by user ${user.id}`,
     );
     return { ok: true };
+  }
+
+  /** Device-api counterparts of getReceiptPdf/emailReceipt -- no User (a
+   *  till has no logged-in user), org scoping already comes from
+   *  DeviceAuthGuard so there's no membership to re-check. */
+  async getReceiptPdfForDevice(
+    organizationId: string,
+    paymentId: string,
+  ): Promise<{ data: Buffer; filename: string }> {
+    const { payment, order, organization } = await this.getPaymentForReceiptCore(organizationId, paymentId);
+    const data = await this.receiptPdfService.generateReceiptPdf(payment, order, organization);
+    return { data, filename: `beleg-${order.orderNumber}.pdf` };
+  }
+
+  async emailReceiptForDevice(
+    organizationId: string,
+    paymentId: string,
+    email: string,
+  ): Promise<{ ok: boolean; message?: string }> {
+    const { payment, order, organization } = await this.getPaymentForReceiptCore(organizationId, paymentId);
+    const pdf = await this.receiptPdfService.generateReceiptPdf(payment, order, organization);
+    const sent = await this.emailService.sendReceiptEmail({
+      to: email,
+      organizationName: organization?.name || 'OpenEOS',
+      orderNumber: order.orderNumber,
+      pdf,
+      filename: `beleg-${order.orderNumber}.pdf`,
+    });
+    if (!sent) {
+      return { ok: false, message: 'E-Mail-Versand fehlgeschlagen' };
+    }
+    this.logger.log(`Receipt for order ${order.orderNumber} emailed to ${email} from device`);
+    return { ok: true };
+  }
+
+  /**
+   * Signs a short-lived link a customer's own phone can open with zero auth
+   * of its own (the POS's post-payment QR code). The token IS the
+   * authorization from here on -- getReceiptPdfByToken trusts it exactly as
+   * much as a JWT user or a device token, so it deliberately carries no more
+   * than what's needed to scope exactly one payment's receipt: no user
+   * identity, no standing org access, nothing reusable beyond that.
+   */
+  async getReceiptLink(
+    organizationId: string,
+    paymentId: string,
+  ): Promise<{ url: string; expiresAt: string }> {
+    // Cheap existence/ownership check up front -- don't mint a token for a
+    // payment that isn't this org's, even though the token itself would
+    // still be scoped correctly (getReceiptPdfByToken re-checks anyway).
+    await this.getPaymentForReceiptCore(organizationId, paymentId);
+
+    const token = await this.jwtService.signAsync(
+      { purpose: 'receipt', paymentId, organizationId },
+      { expiresIn: this.RECEIPT_LINK_TTL },
+    );
+    const appUrl = this.configService.get<string>('APP_URL') || 'https://app.openeos.de';
+    const expiresAt = new Date(Date.now() + this.RECEIPT_LINK_TTL_MS).toISOString();
+    return { url: `${appUrl}/r/${token}`, expiresAt };
+  }
+
+  /** Public counterpart of getReceiptPdf -- verifies the signed token instead
+   *  of a user/device identity, then serves the identical PDF. */
+  async getReceiptPdfByToken(token: string): Promise<{ data: Buffer; filename: string }> {
+    let payload: { purpose?: string; paymentId?: string; organizationId?: string };
+    try {
+      payload = await this.jwtService.verifyAsync(token);
+    } catch {
+      throw new NotFoundException({
+        code: ErrorCodes.NOT_FOUND,
+        message: 'Beleg-Link ist ungültig oder abgelaufen',
+      });
+    }
+    if (payload.purpose !== 'receipt' || !payload.paymentId || !payload.organizationId) {
+      throw new NotFoundException({
+        code: ErrorCodes.NOT_FOUND,
+        message: 'Beleg-Link ist ungültig oder abgelaufen',
+      });
+    }
+    const { payment, order, organization } = await this.getPaymentForReceiptCore(
+      payload.organizationId,
+      payload.paymentId,
+    );
+    const data = await this.receiptPdfService.generateReceiptPdf(payment, order, organization);
+    return { data, filename: `beleg-${order.orderNumber}.pdf` };
   }
 
   async getBewirtungsbelegPdf(

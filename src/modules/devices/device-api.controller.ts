@@ -5,13 +5,17 @@ import {
   Body,
   Param,
   Query,
+  Res,
   UseGuards,
   ParseUUIDPipe,
   BadRequestException,
   NotFoundException,
   ForbiddenException,
   Logger,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { ApiTags, ApiOperation, ApiHeader } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
@@ -57,6 +61,7 @@ import { ErrorCodes } from '../../common/constants/error-codes';
 import { DeviceSettings } from '../../database/entities/device.entity';
 import { CreateOrderDto } from '../orders/dto';
 import { CreatePaymentDto } from '../payments/dto';
+import { PaymentsService } from '../payments/payments.service';
 import { SumUpApiService } from '../sumup/sumup-api.service';
 import { PrintersService } from '../printers/printers.service';
 import { GatewayService } from '../gateway/gateway.service';
@@ -137,6 +142,7 @@ export class DeviceApiController {
     private readonly pfandReturnsService: PfandReturnsService,
     private readonly configService: ConfigService,
     private readonly tseService: TseService,
+    private readonly paymentsService: PaymentsService,
   ) {}
 
   /**
@@ -1394,6 +1400,55 @@ export class DeviceApiController {
     );
 
     return { data: { success: true } };
+  }
+
+  // ── Post-payment receipt delivery ─────────────────────────────────────
+  // View/email/QR-link, reusing PaymentsService's PDF generation. Printing
+  // already exists above (reprintOrder); these three cover the rest of the
+  // "hand the customer their receipt" options the POS offers after a
+  // payment completes.
+
+  @Get('payments/:paymentId/receipt')
+  @ApiOperation({ summary: "Render a payment's receipt as a PDF, for viewing on the POS screen" })
+  async getPaymentReceipt(
+    @CurrentDevice() device: Device,
+    @Param('paymentId', ParseUUIDPipe) paymentId: string,
+    @Res() res: Response,
+  ) {
+    const organizationId = requireOrganization(device);
+    const { data, filename } = await this.paymentsService.getReceiptPdfForDevice(organizationId, paymentId);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    res.send(data);
+  }
+
+  @Post('payments/:paymentId/receipt/email')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Email a payment's receipt to an address the cashier types in" })
+  emailPaymentReceipt(
+    @CurrentDevice() device: Device,
+    @Param('paymentId', ParseUUIDPipe) paymentId: string,
+    @Body() body: { email: string },
+  ) {
+    const organizationId = requireOrganization(device);
+    if (!body.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email)) {
+      throw new BadRequestException({
+        code: ErrorCodes.VALIDATION_ERROR,
+        message: 'Gültige E-Mail-Adresse erforderlich',
+      });
+    }
+    return this.paymentsService.emailReceiptForDevice(organizationId, paymentId, body.email);
+  }
+
+  @Get('payments/:paymentId/receipt-link')
+  @ApiOperation({ summary: 'Get a short-lived, unauthenticated receipt link/QR target for the customer\'s own phone' })
+  async getPaymentReceiptLink(
+    @CurrentDevice() device: Device,
+    @Param('paymentId', ParseUUIDPipe) paymentId: string,
+  ) {
+    const organizationId = requireOrganization(device);
+    const link = await this.paymentsService.getReceiptLink(organizationId, paymentId);
+    return { data: link };
   }
 
   // Station display endpoints

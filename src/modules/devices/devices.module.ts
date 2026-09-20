@@ -29,6 +29,7 @@ import { OrdersModule } from '../orders/orders.module';
 import { DiscountVouchersModule } from '../discount-vouchers';
 import { PfandTypesModule } from '../pfand-types';
 import { TseModule } from '../tse/tse.module';
+import { PaymentsModule } from '../payments/payments.module';
 
 @Module({
   imports: [
@@ -55,6 +56,10 @@ import { TseModule } from '../tse/tse.module';
     DiscountVouchersModule,
     PfandTypesModule,
     TseModule,
+    // Reused only for the receipt view/email/link endpoints (view+email+QR
+    // link) -- device-api keeps its own payment-creation logic (TSE signing
+    // etc.) rather than depending on PaymentsService for that.
+    PaymentsModule,
   ],
   controllers: [
     DevicesController,

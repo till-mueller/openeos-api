@@ -17,6 +17,8 @@ describe('PaymentsService — TSE hook in create()', () => {
   let receiptPdfService: { generateReceiptPdf: jest.Mock; generateBewirtungsbelegPdf: jest.Mock };
   let emailService: { sendReceiptEmail: jest.Mock };
   let orderAuditLogRepository: { create: jest.Mock; save: jest.Mock; findOne: jest.Mock };
+  let jwtService: { signAsync: jest.Mock; verifyAsync: jest.Mock };
+  let configService: { get: jest.Mock };
   let service: PaymentsService;
 
   const ORG_ID = 'org-1';
@@ -59,6 +61,8 @@ describe('PaymentsService — TSE hook in create()', () => {
     receiptPdfService = { generateReceiptPdf: jest.fn(), generateBewirtungsbelegPdf: jest.fn() };
     emailService = { sendReceiptEmail: jest.fn() };
     orderAuditLogRepository = { create: jest.fn((d) => ({ ...d, id: 'audit-1' })), save: jest.fn(async (l) => l), findOne: jest.fn() };
+    jwtService = { signAsync: jest.fn().mockResolvedValue('signed-token'), verifyAsync: jest.fn() };
+    configService = { get: jest.fn() };
 
     service = new PaymentsService(
       paymentRepository as any,
@@ -72,6 +76,8 @@ describe('PaymentsService — TSE hook in create()', () => {
       receiptPdfService as any,
       emailService as any,
       orderAuditLogRepository as any,
+      jwtService as any,
+      configService as any,
     );
   });
 

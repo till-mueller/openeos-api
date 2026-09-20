@@ -235,6 +235,8 @@ describe('Order → payment → TSE integration (real Orders/Payments/Tse servic
       {} as any,
       {} as any,
       orderAuditLogRepository as any,
+      { signAsync: jest.fn(), verifyAsync: jest.fn() } as any,
+      { get: jest.fn() } as any,
     );
   });
 
