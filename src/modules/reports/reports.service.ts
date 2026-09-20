@@ -758,6 +758,89 @@ export class ReportsService {
     });
   }
 
+  /**
+   * A single server's own sales/commission summary, for the POS kiosk's
+   * "My earnings" screen. Scoped by the device-api's own DeviceAuthGuard
+   * (PIN-authenticated on the device) rather than a dashboard admin JWT —
+   * deliberately skips checkPermission, since there's no org-membership
+   * user session here to check permissions against.
+   */
+  async getServerOwnEarnings(
+    organizationId: string,
+    userId: string,
+    queryDto: QueryReportsDto,
+  ): Promise<ServerReport> {
+    const { eventId, startDate, endDate } = queryDto;
+
+    const membership = await this.userOrganizationRepository.findOne({
+      where: { organizationId, userId },
+      relations: ['user'],
+    });
+    if (!membership) {
+      throw new ForbiddenException({
+        code: ErrorCodes.FORBIDDEN,
+        message: 'Sie sind kein Mitglied dieser Organisation',
+      });
+    }
+
+    const queryBuilder = this.paymentRepository
+      .createQueryBuilder('payment')
+      .innerJoin('payment.order', 'order')
+      .where('order.organizationId = :organizationId', { organizationId })
+      .andWhere('payment.processedByUserId = :userId', { userId })
+      .andWhere('payment.status = :paymentStatus', {
+        paymentStatus: PaymentTransactionStatus.CAPTURED,
+      });
+
+    if (eventId) {
+      queryBuilder.andWhere('order.eventId = :eventId', { eventId });
+    }
+
+    if (startDate && endDate) {
+      queryBuilder.andWhere('payment.createdAt BETWEEN :startDate AND :endDate', {
+        startDate: new Date(startDate),
+        endDate: endOfDay(endDate),
+      });
+    } else if (startDate) {
+      queryBuilder.andWhere('payment.createdAt >= :startDate', {
+        startDate: new Date(startDate),
+      });
+    } else if (endDate) {
+      queryBuilder.andWhere('payment.createdAt <= :endDate', {
+        endDate: endOfDay(endDate),
+      });
+    }
+
+    const result = await queryBuilder
+      .select([
+        'COUNT(DISTINCT payment.orderId) as "ordersCount"',
+        `SUM(CASE WHEN payment.paymentMethod = '${PaymentMethod.CASH}' THEN payment.amount ELSE 0 END) as "cashTotal"`,
+        `SUM(CASE WHEN payment.paymentMethod != '${PaymentMethod.CASH}' THEN payment.amount ELSE 0 END) as "cardTotal"`,
+        'SUM(payment.amount) as "totalSold"',
+      ])
+      .getRawOne<{
+        ordersCount: string;
+        cashTotal: string;
+        cardTotal: string;
+        totalSold: string;
+      }>();
+
+    const totalSold = Number(result?.totalSold || 0);
+    const commissionPercent = Number(membership.commissionPercent);
+
+    return {
+      userId,
+      name: `${membership.user.firstName} ${membership.user.lastName}`.trim(),
+      role: membership.role,
+      commissionPercent,
+      ordersCount: Number(result?.ordersCount || 0),
+      totalSold,
+      cashTotal: Number(result?.cashTotal || 0),
+      cardTotal: Number(result?.cardTotal || 0),
+      commissionEarned: (totalSold * commissionPercent) / 100,
+    };
+  }
+
   async getInventoryReport(
     eventId: string,
     user: User,

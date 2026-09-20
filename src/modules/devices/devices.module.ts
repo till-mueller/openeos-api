@@ -30,6 +30,7 @@ import { DiscountVouchersModule } from '../discount-vouchers';
 import { PfandTypesModule } from '../pfand-types';
 import { TseModule } from '../tse/tse.module';
 import { PaymentsModule } from '../payments/payments.module';
+import { ReportsModule } from '../reports/reports.module';
 
 @Module({
   imports: [
@@ -60,6 +61,8 @@ import { PaymentsModule } from '../payments/payments.module';
     // link) -- device-api keeps its own payment-creation logic (TSE signing
     // etc.) rather than depending on PaymentsService for that.
     PaymentsModule,
+    // Reused only for the "My earnings" endpoint's aggregation query.
+    ReportsModule,
   ],
   controllers: [
     DevicesController,

@@ -73,6 +73,8 @@ import { PfandTypesService } from '../pfand-types/pfand-types.service';
 import { PfandReturnsService } from '../pfand-types/pfand-returns.service';
 import { CreatePfandReturnDto } from '../pfand-types/dto';
 import { TseService } from '../tse/tse.service';
+import { ReportsService } from '../reports/reports.service';
+import { QueryReportsDto } from '../reports/dto';
 import {
   splitsFromItems,
   allocateToAmount,
@@ -143,6 +145,7 @@ export class DeviceApiController {
     private readonly configService: ConfigService,
     private readonly tseService: TseService,
     private readonly paymentsService: PaymentsService,
+    private readonly reportsService: ReportsService,
   ) {}
 
   /**
@@ -373,6 +376,29 @@ export class DeviceApiController {
       verifyPinDto.pin,
     );
     return { data: result };
+  }
+
+  /**
+   * "My earnings" screen on the POS kiosk: what the PIN-authenticated
+   * server themselves sold, split cash/card, plus their commission. No
+   * further auth beyond the device token + a prior successful verify-pin --
+   * same trust boundary the rest of device-api already uses to attribute
+   * payments to a userId supplied by the client.
+   */
+  @Get('servers/:userId/earnings')
+  @ApiOperation({ summary: "A server's own sales/commission summary" })
+  async getServerEarnings(
+    @CurrentDevice() device: Device,
+    @Param('userId', ParseUUIDPipe) userId: string,
+    @Query() queryDto: QueryReportsDto,
+  ) {
+    const organizationId = requireOrganization(device);
+    const earnings = await this.reportsService.getServerOwnEarnings(
+      organizationId,
+      userId,
+      queryDto,
+    );
+    return { data: earnings };
   }
 
   @Get('events')
