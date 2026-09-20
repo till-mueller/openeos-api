@@ -29,6 +29,7 @@ import {
   Organization,
   Payment,
 } from '../../database/entities';
+import { OrderAuditAction } from '../../database/entities/order-audit-log.entity';
 import { PaymentTransactionStatus } from '../../database/entities/payment.entity';
 import {
   splitsFromItems,
@@ -46,7 +47,7 @@ import { OrderItemStatus } from '../../database/entities/order-item.entity';
 import { StockMovementType } from '../../database/entities/stock-movement.entity';
 import { EventStatus } from '../../database/entities/event.entity';
 import { OrganizationRole } from '../../database/entities/user-organization.entity';
-import { ErrorCodes } from '../../common/constants/error-codes';
+import { ErrorCodes, ErrorMessages } from '../../common/constants/error-codes';
 import { assertTestEventOrderLimitNotReached } from '../../common/utils/test-event-order-limit.util';
 import {
   PaginatedResult,
@@ -59,6 +60,8 @@ import {
   UpdateOrderItemDto,
   QueryOrdersDto,
   CancelOrderDto,
+  ForceCancelOrderDto,
+  ForceUpdateOrderStatusDto,
 } from './dto';
 import { OrderPrintService } from '../print-jobs/order-print.service';
 import { PrintJobsService } from '../print-jobs/print-jobs.service';
@@ -882,6 +885,184 @@ export class OrdersService {
     }
   }
 
+  /**
+   * Org-admin override for cancellations the normal `cancelOrder` guardrails
+   * refuse (e.g. an already-COMPLETED order). Unlike `cancelOrder`'s
+   * best-effort TSE reversal (BMF Ausfall-Regelung: a signing outage must
+   * never block a cashier's normal cancel), a *forced* admin override
+   * inverts that trade-off: it's the deliberate bypass of a safeguard, so
+   * the TSE reversal is required to succeed before the order is actually
+   * cancelled. A failed reversal aborts the whole action and is written to
+   * OrderAuditLog with the failure detail so the rejected attempt itself
+   * stays visible -- silently discarding it would be worse than the outage
+   * it's protecting against.
+   *
+   * Payments that DID reverse successfully before a later one failed stay
+   * reversed and persisted: the TSE signing already happened and can't be
+   * un-signed, so leaving that write out of our own audit trail would be a
+   * bigger compliance gap than the partial state itself.
+   */
+  async forceCancelOrder(
+    organizationId: string,
+    orderId: string,
+    dto: ForceCancelOrderDto,
+    user: User,
+  ): Promise<Order> {
+    await this.checkOrgAdmin(organizationId, user);
+
+    const order = await this.findOne(organizationId, orderId, user);
+
+    if (order.status === OrderStatus.CANCELLED) {
+      throw new BadRequestException({
+        code: ErrorCodes.VALIDATION_ERROR,
+        message: 'Bestellung ist bereits storniert',
+      });
+    }
+
+    const before = { status: order.status, paymentStatus: order.paymentStatus };
+
+    const capturedPayments = await this.paymentRepository.find({
+      where: { orderId: order.id, status: PaymentTransactionStatus.CAPTURED },
+    });
+
+    for (const original of capturedPayments) {
+      const storedSplits = original.tseData?.vatSplits;
+      const vatSplits = storedSplits?.length
+        ? negateSplits(storedSplits)
+        : allocateToAmount(
+            splitsFromItems(
+              order.items.map((i) => ({
+                quantity: i.quantity,
+                unitPrice: Number(i.unitPrice),
+                optionsPrice: Number(i.optionsPrice),
+                taxRate: Number(i.taxRate),
+              })),
+            ),
+            -Number(original.amount),
+          );
+      const tseData = await this.tseService.reverseTransaction(
+        organizationId,
+        order.createdByDeviceId ?? null,
+        { amount: Number(original.amount), paymentMethod: original.paymentMethod, vatSplits },
+      );
+      const reversal = this.paymentRepository.create({
+        orderId: original.orderId,
+        amount: -Number(original.amount),
+        paymentMethod: original.paymentMethod,
+        paymentProvider: original.paymentProvider,
+        status: PaymentTransactionStatus.CAPTURED,
+        reversesPaymentId: original.id,
+        tseData: tseData ?? null,
+      });
+      await this.paymentRepository.save(reversal);
+
+      if (tseData?.failed) {
+        await this.orderAuditLogRepository.save(
+          this.orderAuditLogRepository.create({
+            organizationId,
+            orderId: order.id,
+            actorUserId: user.id,
+            action: OrderAuditAction.FORCE_CANCEL,
+            reason: dto.reason,
+            details: {
+              before,
+              failure: {
+                errorCode: tseData.errorCode,
+                httpStatus: tseData.httpStatus,
+                failureReason: tseData.failureReason,
+              },
+            },
+          }),
+        );
+        this.logger.error(
+          `Force-cancel aborted: TSE reversal failed for payment ${original.id} on order ${order.orderNumber} (errorCode ${tseData.errorCode ?? 'n/a'})`,
+        );
+        throw new BadRequestException({
+          code: ErrorCodes.TSE_REVERSAL_REQUIRED,
+          message: ErrorMessages[ErrorCodes.TSE_REVERSAL_REQUIRED],
+        });
+      }
+    }
+
+    for (const item of order.items) {
+      await this.restoreStockForItem(item, user.id);
+      item.status = OrderItemStatus.CANCELLED;
+      await this.orderItemRepository.save(item);
+    }
+
+    order.status = OrderStatus.CANCELLED;
+    order.cancelledAt = new Date();
+    order.cancellationReason = dto.reason;
+    await this.orderRepository.save(order);
+
+    await this.orderAuditLogRepository.save(
+      this.orderAuditLogRepository.create({
+        organizationId,
+        orderId: order.id,
+        actorUserId: user.id,
+        action: OrderAuditAction.FORCE_CANCEL,
+        reason: dto.reason,
+        details: { before, after: { status: order.status, paymentStatus: order.paymentStatus } },
+      }),
+    );
+
+    this.logger.log(`Order force-cancelled by ${user.id}: ${order.orderNumber}`);
+
+    return this.findOne(organizationId, orderId, user);
+  }
+
+  /**
+   * Org-admin override for the status field alone — no stock/payment/TSE
+   * side effects, unlike callOrder/completeOrder/cancelOrder. CANCELLED is
+   * refused as a target on purpose: that transition has to go through
+   * forceCancelOrder so the required TSE reversal and stock restore
+   * actually happen instead of being silently skipped by a plain status
+   * flip.
+   */
+  async forceUpdateStatus(
+    organizationId: string,
+    orderId: string,
+    dto: ForceUpdateOrderStatusDto,
+    user: User,
+  ): Promise<Order> {
+    await this.checkOrgAdmin(organizationId, user);
+
+    if ((dto.status as OrderStatus) === OrderStatus.CANCELLED) {
+      throw new BadRequestException({
+        code: ErrorCodes.VALIDATION_ERROR,
+        message: 'Für Stornierungen force-cancel verwenden (erfordert TSE-Storno)',
+      });
+    }
+
+    const order = await this.findOne(organizationId, orderId, user);
+
+    if (order.status === OrderStatus.CANCELLED) {
+      throw new BadRequestException({
+        code: ErrorCodes.VALIDATION_ERROR,
+        message: 'Stornierte Bestellung kann nicht per Status-Override reaktiviert werden',
+      });
+    }
+
+    const before = order.status;
+    order.status = dto.status as OrderStatus;
+    await this.orderRepository.save(order);
+
+    await this.orderAuditLogRepository.save(
+      this.orderAuditLogRepository.create({
+        organizationId,
+        orderId: order.id,
+        actorUserId: user.id,
+        action: OrderAuditAction.FORCE_UPDATE_STATUS,
+        reason: dto.reason,
+        details: { before: { status: before }, after: { status: order.status } },
+      }),
+    );
+
+    this.logger.log(`Order status force-updated by ${user.id}: ${order.orderNumber} (${before} -> ${order.status})`);
+
+    return this.findOne(organizationId, orderId, user);
+  }
+
   // Private helper methods
 
   /**
@@ -1359,6 +1540,27 @@ export class OrdersService {
       throw new ForbiddenException({
         code: ErrorCodes.FORBIDDEN,
         message: 'Kein Zugriff auf diese Organisation',
+      });
+    }
+  }
+
+  /**
+   * Gate for Force* overrides (org-ADMIN only, unlike the plain member
+   * access every other order action allows) -- mirrors
+   * OrganizationsService.checkRole's isSuperAdmin bypass + role hierarchy
+   * rather than importing that service just for this one check.
+   */
+  private async checkOrgAdmin(organizationId: string, user: User): Promise<void> {
+    if (user.isSuperAdmin) return;
+
+    const membership = await this.userOrganizationRepository.findOne({
+      where: { organizationId, userId: user.id },
+    });
+
+    if (!membership || membership.role !== OrganizationRole.ADMIN) {
+      throw new ForbiddenException({
+        code: ErrorCodes.FORBIDDEN,
+        message: 'Nur Organisations-Admins können diese Aktion erzwingen',
       });
     }
   }

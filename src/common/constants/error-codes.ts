@@ -40,6 +40,7 @@ export const ErrorCodes = {
   INVENTORY_ALREADY_COMPLETED: 'INVENTORY_ALREADY_COMPLETED',
   EVENT_NOT_PAID: 'EVENT_NOT_PAID',
   TEST_LIMIT_REACHED: 'TEST_LIMIT_REACHED',
+  TSE_REVERSAL_REQUIRED: 'TSE_REVERSAL_REQUIRED',
 
   // Credit & License Errors
   INSUFFICIENT_CREDITS: 'INSUFFICIENT_CREDITS',
@@ -97,6 +98,7 @@ export const ErrorMessages: Record<ErrorCode, string> = {
   [ErrorCodes.INVENTORY_ALREADY_COMPLETED]: 'Inventur bereits abgeschlossen',
   [ErrorCodes.EVENT_NOT_PAID]: 'Veranstaltung ist noch nicht freigeschaltet — bitte zuerst kostenpflichtig bestellen',
   [ErrorCodes.TEST_LIMIT_REACHED]: 'Test-Limit erreicht',
+  [ErrorCodes.TSE_REVERSAL_REQUIRED]: 'TSE-Stornierung fehlgeschlagen — erzwungene Aktion abgebrochen',
 
   [ErrorCodes.INSUFFICIENT_CREDITS]: 'Nicht genug Guthaben',
   [ErrorCodes.CREDITS_REQUIRED]: 'Guthaben erforderlich für diese Aktion',

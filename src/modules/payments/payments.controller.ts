@@ -16,7 +16,7 @@ import type { Response } from 'express';
 import { PaymentsService } from './payments.service';
 import { CurrentUser } from '../../common/decorators';
 import { User } from '../../database/entities';
-import { CreatePaymentDto, SplitPaymentDto, QueryPaymentsDto } from './dto';
+import { CreatePaymentDto, SplitPaymentDto, QueryPaymentsDto, ForceRefundPaymentDto } from './dto';
 
 @ApiTags('Payments')
 @ApiBearerAuth('JWT-auth')
@@ -77,6 +77,17 @@ export class PaymentsController {
     @CurrentUser() user: User,
   ) {
     return this.paymentsService.refund(organizationId, paymentId, user);
+  }
+
+  @Post(':paymentId/force-refund')
+  @HttpCode(HttpStatus.OK)
+  forceRefund(
+    @Param('organizationId', ParseUUIDPipe) organizationId: string,
+    @Param('paymentId', ParseUUIDPipe) paymentId: string,
+    @Body() forceRefundDto: ForceRefundPaymentDto,
+    @CurrentUser() user: User,
+  ) {
+    return this.paymentsService.forceRefund(organizationId, paymentId, forceRefundDto, user);
   }
 
   /**

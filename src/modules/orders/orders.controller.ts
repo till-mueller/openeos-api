@@ -22,6 +22,8 @@ import {
   UpdateOrderItemDto,
   QueryOrdersDto,
   CancelOrderDto,
+  ForceCancelOrderDto,
+  ForceUpdateOrderStatusDto,
 } from './dto';
 
 @ApiTags('Orders')
@@ -174,5 +176,27 @@ export class OrdersController {
     @CurrentUser() user: User,
   ) {
     return this.ordersService.cancelOrder(organizationId, orderId, cancelDto, user);
+  }
+
+  @Post(':orderId/force-cancel')
+  @HttpCode(HttpStatus.OK)
+  forceCancelOrder(
+    @Param('organizationId', ParseUUIDPipe) organizationId: string,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Body() forceCancelDto: ForceCancelOrderDto,
+    @CurrentUser() user: User,
+  ) {
+    return this.ordersService.forceCancelOrder(organizationId, orderId, forceCancelDto, user);
+  }
+
+  @Post(':orderId/force-status')
+  @HttpCode(HttpStatus.OK)
+  forceUpdateStatus(
+    @Param('organizationId', ParseUUIDPipe) organizationId: string,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Body() forceStatusDto: ForceUpdateOrderStatusDto,
+    @CurrentUser() user: User,
+  ) {
+    return this.ordersService.forceUpdateStatus(organizationId, orderId, forceStatusDto, user);
   }
 }

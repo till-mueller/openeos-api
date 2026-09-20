@@ -1,7 +1,9 @@
-import { Logger } from '@nestjs/common';
+import { ForbiddenException, Logger } from '@nestjs/common';
 import { PaymentsService } from './payments.service';
 import { PaymentMethod, PaymentTransactionStatus } from '../../database/entities/payment.entity';
 import { PaymentStatus } from '../../database/entities/order.entity';
+import { OrganizationRole } from '../../database/entities/user-organization.entity';
+import { OrderAuditAction } from '../../database/entities/order-audit-log.entity';
 
 describe('PaymentsService — TSE hook in create()', () => {
   let paymentRepository: { create: jest.Mock; save: jest.Mock; findOne: jest.Mock };
@@ -386,6 +388,109 @@ describe('PaymentsService — TSE hook in create()', () => {
       const result = await service.refund(ORG_ID, 'payment-1', user);
 
       expect(result).toBeDefined();
+    });
+  });
+
+  describe('forceRefund', () => {
+    const capturedPayment = () => ({
+      id: 'payment-1',
+      orderId: 'order-1',
+      amount: 20,
+      paymentMethod: PaymentMethod.CASH,
+      paymentProvider: 'CASH',
+      status: PaymentTransactionStatus.CAPTURED,
+      itemPayments: [],
+      order: { organizationId: ORG_ID },
+    });
+    const reasonDto = { reason: 'Kundenreklamation, manuelle Korrektur' };
+
+    beforeEach(() => {
+      paymentRepository.findOne.mockImplementation(async () => capturedPayment());
+      orderRepository.findOne.mockResolvedValue(baseOrder());
+      userOrganizationRepository.findOne.mockResolvedValue({ id: 'membership-1', role: OrganizationRole.ADMIN });
+    });
+
+    it('refuses a non-admin member', async () => {
+      userOrganizationRepository.findOne.mockResolvedValue({ id: 'membership-1', role: OrganizationRole.MEMBER });
+
+      await expect(service.forceRefund(ORG_ID, 'payment-1', reasonDto, user)).rejects.toBeInstanceOf(ForbiddenException);
+      expect(paymentRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('signs the reversal, flips the payment to REFUNDED, and writes a success audit entry', async () => {
+      tseService.reverseTransaction.mockResolvedValue({
+        provider: 'fiskaly',
+        clientId: 'device-1',
+        transactionNumber: 2,
+        serialNumber: 'SN',
+        signatureCounter: 2,
+        signatureValue: 'sig-reversal',
+        signatureAlgorithm: 'algo',
+        startTime: 't0',
+        endTime: 't1',
+        processType: 'Kassenbeleg-V1',
+        processData: '',
+        qrCodeData: 'qr',
+        failed: false,
+      });
+
+      await service.forceRefund(ORG_ID, 'payment-1', reasonDto, user);
+
+      expect(paymentRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({ orderId: 'order-1', amount: -20, reversesPaymentId: 'payment-1' }),
+      );
+      const flippedSave = paymentRepository.save.mock.calls.find((c) => c[0].status === PaymentTransactionStatus.REFUNDED);
+      expect(flippedSave).toBeDefined();
+
+      expect(orderAuditLogRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          organizationId: ORG_ID,
+          orderId: 'order-1',
+          actorUserId: user.id,
+          action: OrderAuditAction.FORCE_REFUND,
+          reason: reasonDto.reason,
+          details: expect.objectContaining({ after: expect.objectContaining({ status: PaymentTransactionStatus.REFUNDED }) }),
+        }),
+      );
+    });
+
+    it('aborts and writes a failure audit entry instead of refunding when the TSE reversal fails', async () => {
+      tseService.reverseTransaction.mockResolvedValue({
+        provider: 'fiskaly',
+        clientId: 'device-1',
+        transactionNumber: 0,
+        serialNumber: '',
+        signatureCounter: 0,
+        signatureValue: '',
+        signatureAlgorithm: '',
+        startTime: 't0',
+        endTime: 't1',
+        processType: 'Kassenbeleg-V1',
+        processData: '',
+        qrCodeData: '',
+        failed: true,
+        failureReason: 'TSS not initialized',
+        errorCode: 'TSS_NOT_INITIALIZED',
+        httpStatus: 400,
+        failedAt: 't0',
+      });
+
+      await expect(service.forceRefund(ORG_ID, 'payment-1', reasonDto, user)).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'TSE_REVERSAL_REQUIRED' }),
+      });
+
+      // Never flips the payment to REFUNDED when the reversal was rejected.
+      expect(paymentRepository.save).not.toHaveBeenCalledWith(
+        expect.objectContaining({ status: PaymentTransactionStatus.REFUNDED }),
+      );
+      expect(orderAuditLogRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: OrderAuditAction.FORCE_REFUND,
+          details: expect.objectContaining({
+            failure: expect.objectContaining({ errorCode: 'TSS_NOT_INITIALIZED', httpStatus: 400 }),
+          }),
+        }),
+      );
     });
   });
 

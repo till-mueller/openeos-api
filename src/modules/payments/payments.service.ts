@@ -24,12 +24,13 @@ import {
 } from '../../database/entities/payment.entity';
 import { PaymentStatus } from '../../database/entities/order.entity';
 import { OrganizationRole } from '../../database/entities/user-organization.entity';
-import { ErrorCodes } from '../../common/constants/error-codes';
+import { OrderAuditAction } from '../../database/entities/order-audit-log.entity';
+import { ErrorCodes, ErrorMessages } from '../../common/constants/error-codes';
 import {
   PaginatedResult,
   createPaginatedResult,
 } from '../../common/dto/pagination.dto';
-import { CreatePaymentDto, SplitPaymentDto, QueryPaymentsDto } from './dto';
+import { CreatePaymentDto, SplitPaymentDto, QueryPaymentsDto, ForceRefundPaymentDto } from './dto';
 import { OrderPrintService } from '../print-jobs/order-print.service';
 import { TseService } from '../tse/tse.service';
 import { ReceiptPdfService } from './receipt-pdf.service';
@@ -613,6 +614,143 @@ export class PaymentsService {
   }
 
   /**
+   * Org-admin override with the same required-TSE-reversal trade-off as
+   * OrdersService.forceCancelOrder: `refund` above is best-effort on TSE
+   * signing (BMF Ausfall-Regelung — a normal refund must not be blocked by
+   * a TSE outage), but a deliberate admin-forced refund inverts that: the
+   * reversal must actually sign, or the whole action aborts and the
+   * rejected attempt is written to OrderAuditLog for visibility.
+   */
+  async forceRefund(
+    organizationId: string,
+    paymentId: string,
+    dto: ForceRefundPaymentDto,
+    user: User,
+  ): Promise<Payment> {
+    await this.checkOrgAdmin(organizationId, user);
+
+    const payment = await this.findOne(organizationId, paymentId, user);
+
+    if (payment.status === PaymentTransactionStatus.REFUNDED) {
+      throw new BadRequestException({
+        code: ErrorCodes.VALIDATION_ERROR,
+        message: 'Zahlung wurde bereits erstattet',
+      });
+    }
+
+    if (payment.status !== PaymentTransactionStatus.CAPTURED) {
+      throw new BadRequestException({
+        code: ErrorCodes.VALIDATION_ERROR,
+        message: 'Nur abgeschlossene Zahlungen können erstattet werden',
+      });
+    }
+
+    const order = await this.orderRepository.findOne({
+      where: { id: payment.orderId },
+      relations: ['items'],
+    });
+
+    const storedSplits = payment.tseData?.vatSplits;
+    const vatSplits = order
+      ? storedSplits?.length
+        ? negateSplits(storedSplits)
+        : allocateToAmount(
+            splitsFromItems(
+              order.items.map((i) => ({
+                quantity: i.quantity,
+                unitPrice: Number(i.unitPrice),
+                optionsPrice: Number(i.optionsPrice),
+                taxRate: Number(i.taxRate),
+              })),
+            ),
+            -Number(payment.amount),
+          )
+      : [];
+    const tseData = await this.tseService.reverseTransaction(
+      organizationId,
+      order?.createdByDeviceId ?? null,
+      { amount: Number(payment.amount), paymentMethod: payment.paymentMethod, vatSplits },
+    );
+
+    if (tseData?.failed) {
+      await this.orderAuditLogRepository.save(
+        this.orderAuditLogRepository.create({
+          organizationId,
+          orderId: payment.orderId,
+          actorUserId: user.id,
+          action: OrderAuditAction.FORCE_REFUND,
+          reason: dto.reason,
+          details: {
+            before: { paymentId: payment.id, status: payment.status },
+            failure: {
+              errorCode: tseData.errorCode,
+              httpStatus: tseData.httpStatus,
+              failureReason: tseData.failureReason,
+            },
+          },
+        }),
+      );
+      this.logger.error(
+        `Force-refund aborted: TSE reversal failed for payment ${payment.id} (errorCode ${tseData.errorCode ?? 'n/a'})`,
+      );
+      throw new BadRequestException({
+        code: ErrorCodes.TSE_REVERSAL_REQUIRED,
+        message: ErrorMessages[ErrorCodes.TSE_REVERSAL_REQUIRED],
+      });
+    }
+
+    const reversal = this.paymentRepository.create({
+      orderId: payment.orderId,
+      amount: -Number(payment.amount),
+      paymentMethod: payment.paymentMethod,
+      paymentProvider: payment.paymentProvider,
+      status: PaymentTransactionStatus.CAPTURED,
+      reversesPaymentId: payment.id,
+      tseData: tseData ?? null,
+    });
+    await this.paymentRepository.save(reversal);
+
+    payment.status = PaymentTransactionStatus.REFUNDED;
+    await this.paymentRepository.save(payment);
+
+    if (order) {
+      order.paidAmount = Number(order.paidAmount) - Number(payment.amount);
+      if (order.paidAmount < 0) order.paidAmount = 0;
+
+      if (payment.itemPayments && payment.itemPayments.length > 0) {
+        for (const itemPayment of payment.itemPayments) {
+          const orderItem = order.items.find((i) => i.id === itemPayment.orderItemId);
+          if (orderItem) {
+            orderItem.paidQuantity -= itemPayment.quantity;
+            if (orderItem.paidQuantity < 0) orderItem.paidQuantity = 0;
+            await this.orderItemRepository.save(orderItem);
+          }
+        }
+      }
+
+      await this.updateOrderPaymentStatus(order);
+    }
+
+    await this.orderAuditLogRepository.save(
+      this.orderAuditLogRepository.create({
+        organizationId,
+        orderId: payment.orderId,
+        actorUserId: user.id,
+        action: OrderAuditAction.FORCE_REFUND,
+        reason: dto.reason,
+        details: {
+          before: { paymentId: payment.id, status: PaymentTransactionStatus.CAPTURED },
+          after: { paymentId: payment.id, status: PaymentTransactionStatus.REFUNDED },
+        },
+      }),
+    );
+
+    this.logger.log(`Payment force-refunded by ${user.id}: ${payment.id}`);
+
+    return this.findOne(organizationId, paymentId, user);
+  }
+
+  /**
    * Creates the reversal Payment row and signs it through the TSE. Shared
    * shape with signPaymentWithTse (the original-capture path) -- mirrors it
    * deliberately rather than diverging, so the two are easy to compare.
@@ -738,6 +876,22 @@ export class PaymentsService {
       throw new ForbiddenException({
         code: ErrorCodes.FORBIDDEN,
         message: 'Kein Zugriff auf diese Organisation',
+      });
+    }
+  }
+
+  /** Gate for Force* overrides (org-ADMIN only) — mirrors OrdersService.checkOrgAdmin. */
+  private async checkOrgAdmin(organizationId: string, user: User): Promise<void> {
+    if (user.isSuperAdmin) return;
+
+    const membership = await this.userOrganizationRepository.findOne({
+      where: { organizationId, userId: user.id },
+    });
+
+    if (!membership || membership.role !== OrganizationRole.ADMIN) {
+      throw new ForbiddenException({
+        code: ErrorCodes.FORBIDDEN,
+        message: 'Nur Organisations-Admins können diese Aktion erzwingen',
       });
     }
   }
