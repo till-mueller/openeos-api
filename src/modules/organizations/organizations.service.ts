@@ -14,6 +14,7 @@ import {
   User,
   UserOrganization,
   Invitation,
+  AdminAuditLog,
 } from '../../database/entities';
 import { OrganizationRole, OrganizationPermissions } from '../../database/entities/user-organization.entity';
 import { ErrorCodes } from '../../common/constants/error-codes';
@@ -27,7 +28,9 @@ import {
 } from './dto';
 import { EmailService } from '../email/email.service';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
+import { UsersService } from '../users/users.service';
 import { ConfigService } from '@nestjs/config';
+import { AdminAction } from '../../database/entities/admin-audit-log.entity';
 
 const INVITATION_EXPIRY_DAYS = 7;
 
@@ -44,10 +47,13 @@ export class OrganizationsService {
     private readonly userOrganizationRepository: Repository<UserOrganization>,
     @InjectRepository(Invitation)
     private readonly invitationRepository: Repository<Invitation>,
+    @InjectRepository(AdminAuditLog)
+    private readonly auditLogRepository: Repository<AdminAuditLog>,
     private readonly dataSource: DataSource,
     private readonly emailService: EmailService,
     private readonly platformSettingsService: PlatformSettingsService,
     private readonly configService: ConfigService,
+    private readonly usersService: UsersService,
   ) {}
 
   async create(
@@ -388,6 +394,52 @@ export class OrganizationsService {
     await this.userOrganizationRepository.remove(member);
 
     this.logger.log(`Member removed from organization ${organizationId}: ${member.user.email}`);
+  }
+
+  /**
+   * DSGVO erasure of a member by the org admin (e.g. after an event per the
+   * org's retention policy). Same anonymizer as self-service; audit-logged
+   * with the pre-anonymization PII as `before` (accountability, Art. 5(2)).
+   */
+  async anonymizeMember(
+    organizationId: string,
+    targetUserId: string,
+    currentUser: User,
+    ipAddress: string,
+    userAgent?: string,
+  ): Promise<void> {
+    await this.checkRole(organizationId, currentUser, OrganizationRole.ADMIN);
+
+    const membership = await this.userOrganizationRepository.findOne({
+      where: { organizationId, userId: targetUserId },
+    });
+    if (!membership) {
+      throw new NotFoundException({
+        code: ErrorCodes.NOT_FOUND,
+        message: 'Mitglied nicht gefunden',
+      });
+    }
+
+    await this.usersService.assertNotLastOrgAdmin(targetUserId);
+
+    const target = await this.usersService.getUserById(targetUserId);
+    const before = { email: target.email, firstName: target.firstName, lastName: target.lastName };
+
+    await this.usersService.anonymizeUser(targetUserId);
+
+    await this.auditLogRepository.save(
+      this.auditLogRepository.create({
+        adminUserId: currentUser.id,
+        organizationId,
+        action: AdminAction.ANONYMIZE_USER,
+        resourceType: 'user',
+        resourceId: targetUserId,
+        details: { before },
+        ipAddress,
+        userAgent: userAgent || null,
+        reason: null,
+      }),
+    );
   }
 
   // Invitation Management
