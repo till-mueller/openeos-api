@@ -29,6 +29,11 @@ import {
   Payment,
 } from '../../database/entities';
 import { PaymentTransactionStatus } from '../../database/entities/payment.entity';
+import {
+  splitsFromItems,
+  allocateToAmount,
+  negateSplits,
+} from '../payments/vat-split';
 import { isPfandChargedForFulfillment } from '../../common/utils/pfand-policy';
 import {
   OrderStatus,
@@ -839,10 +844,24 @@ export class OrdersService {
     });
     for (const original of capturedPayments) {
       try {
+        const storedSplits = original.tseData?.vatSplits;
+        const vatSplits = storedSplits?.length
+          ? negateSplits(storedSplits)
+          : allocateToAmount(
+              splitsFromItems(
+                order.items.map((i) => ({
+                  quantity: i.quantity,
+                  unitPrice: Number(i.unitPrice),
+                  optionsPrice: Number(i.optionsPrice),
+                  taxRate: Number(i.taxRate),
+                })),
+              ),
+              -Number(original.amount),
+            );
         const tseData = await this.tseService.reverseTransaction(
           organizationId,
           order.createdByDeviceId ?? null,
-          { amount: Number(original.amount), paymentMethod: original.paymentMethod },
+          { amount: Number(original.amount), paymentMethod: original.paymentMethod, vatSplits },
         );
         const reversal = this.paymentRepository.create({
           orderId: original.orderId,

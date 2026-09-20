@@ -28,6 +28,13 @@ export interface TseLocalConfig {
   organizationId: string;
 }
 
+/** Gross amount for one USt rate inside a signed transaction. */
+export interface TseVatSplit {
+  /** 19 | 7 | 0 — the only rates openEOS can produce (tax-rates.ts). */
+  rate: number;
+  grossAmount: number;
+}
+
 export interface TseTransactionInput {
   /** Needed by the local provider to address the right org's gateway room; harmless for cloud providers. */
   organizationId: string;
@@ -35,6 +42,12 @@ export interface TseTransactionInput {
   amount: number;
   currency: string;
   paymentMethod: string;
+  /**
+   * Per-rate gross splits; sum must equal `amount` exactly (callers use
+   * allocateToAmount). KassenSichV/DSFinV-K require the true rate split —
+   * sending the full amount at NORMAL was the pre-compliance behavior.
+   */
+  vatSplits: TseVatSplit[];
 }
 
 export interface TseExportInput {

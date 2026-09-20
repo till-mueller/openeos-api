@@ -144,6 +144,23 @@ export class EventsShopPublicController {
     const currency =
       (organization?.settings as { currency?: string } | null)?.currency || 'EUR';
     const timezone = organization?.settings?.timezone || 'Europe/Berlin';
+    // Rechtstexte der Organisation — der Shop muss Impressum, Datenschutz,
+    // AGB und Widerruf der Verkaeuferin (nicht von openEOS) ausdrucken
+    // koennen. Die vier Pflichtstrings, auf 50k Zeichen gekuerzt, damit kein
+    // riesiger Text den oeffentlichen Payload aufblaeht.
+    const orgLegal = organization?.settings?.legal;
+    const legal = {
+      imprint: orgLegal?.imprint?.slice(0, 50000) || null,
+      privacy: orgLegal?.privacy?.slice(0, 50000) || null,
+      terms: orgLegal?.terms?.slice(0, 50000) || null,
+      cancellation: orgLegal?.cancellation?.slice(0, 50000) || null,
+    };
+    // USt-Befreiung der Organisation (Kleinunternehmer § 19 UStG/Vereine) —
+    // der Shop braucht sie fuer die Preisnote. Default wie in taxRatesFor:
+    // befreit, solange nicht ausdruecklich `vatExempt: false`. Ein unbelegter
+    // Standard bietet einer Organisation sonst Steuersaetze an, die der Shop
+    // als "inkl. MwSt." ausweist (vgl. taxRatesFor: unbefreit nur bei false).
+    const vatExempt = organization?.settings?.vatExempt !== false;
     const openingHours = event.settings?.shop?.openingHours ?? null;
     const hoursMode = resolveShopHoursMode(event.settings?.shop?.hoursMode, openingHours);
     const windows = resolveShopWindows(event, timezone);
@@ -168,6 +185,8 @@ export class EventsShopPublicController {
           organizationName: organization?.name || '',
         },
         currency,
+        vatExempt,
+        legal,
         shop: {
           hoursMode,
           windows,

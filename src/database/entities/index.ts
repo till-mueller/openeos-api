@@ -48,6 +48,7 @@ export * from './shop-checkout.entity';
 
 // SaaS & Billing
 export * from './invoice.entity';
+export * from './invoice-counter.entity';
 export * from './admin-audit-log.entity';
 export * from './subscription-config.entity';
 

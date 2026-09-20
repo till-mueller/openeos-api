@@ -44,6 +44,9 @@ export class LocalTseProvider implements TseProvider<TseLocalConfig> {
     config: TseLocalConfig,
     input: TseTransactionInput,
   ): Promise<TseTransactionResult> {
+    // vatSplits are accepted for interface parity but not forwarded: the
+    // local hardware path (tse_signer.py) is a placeholder and out of scope
+    // for the German-compliance pass — see the compliance design doc.
     const event: TseSignTransactionEvent = {
       requestId: randomUUID(),
       clientId: input.clientId,

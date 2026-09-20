@@ -64,7 +64,7 @@ describe('TseService', () => {
         settings: { tse: { enabled: false, provider: 'fiskaly' } },
       });
 
-      const result = await service.recordTransaction(ORG_ID, null, { amount: 10, paymentMethod: 'cash' });
+      const result = await service.recordTransaction(ORG_ID, null, { amount: 10, paymentMethod: 'cash', vatSplits: [{ rate: 19, grossAmount: 10 }] });
 
       expect(result).toBeNull();
       expect(fiskalyProvider.recordTransaction).not.toHaveBeenCalled();
@@ -76,7 +76,7 @@ describe('TseService', () => {
         settings: { tse: { enabled: true, provider: 'fiskaly' } }, // no `fiskaly` block
       });
 
-      const result = await service.recordTransaction(ORG_ID, null, { amount: 10, paymentMethod: 'cash' });
+      const result = await service.recordTransaction(ORG_ID, null, { amount: 10, paymentMethod: 'cash', vatSplits: [{ rate: 19, grossAmount: 10 }] });
 
       expect(result).toBeNull();
     });
@@ -104,7 +104,7 @@ describe('TseService', () => {
         qrCodeData: 'qr',
       });
 
-      const result = await service.recordTransaction(ORG_ID, null, { amount: 10, paymentMethod: 'cash' });
+      const result = await service.recordTransaction(ORG_ID, null, { amount: 10, paymentMethod: 'cash', vatSplits: [{ rate: 19, grossAmount: 10 }] });
 
       expect(fiskalyProvider.ensureClient).toHaveBeenCalledWith(
         { apiKey: 'k', apiSecret: 's', tssId: 't' },
@@ -122,7 +122,7 @@ describe('TseService', () => {
       });
       fiskalyProvider.recordTransaction.mockRejectedValue(new Error('network down'));
 
-      const result = await service.recordTransaction(ORG_ID, null, { amount: 10, paymentMethod: 'cash' });
+      const result = await service.recordTransaction(ORG_ID, null, { amount: 10, paymentMethod: 'cash', vatSplits: [{ rate: 19, grossAmount: 10 }] });
 
       expect(result).toEqual(
         expect.objectContaining({ failed: true, failureReason: 'network down', provider: 'fiskaly' }),
@@ -149,12 +149,63 @@ describe('TseService', () => {
         qrCodeData: 'qr',
       });
 
-      await service.recordTransaction(ORG_ID, null, { amount: 10, paymentMethod: 'cash' });
+      await service.recordTransaction(ORG_ID, null, { amount: 10, paymentMethod: 'cash', vatSplits: [{ rate: 19, grossAmount: 10 }] });
 
       expect(localProvider.recordTransaction).toHaveBeenCalledWith(
         { agentDeviceId: 'agent-1', organizationId: ORG_ID },
         expect.objectContaining({ organizationId: ORG_ID, clientId: ORG_ID }),
       );
+    });
+
+    it('forwards the caller-supplied vatSplits to the provider and attaches them to the result', async () => {
+      organizationRepository.findOne.mockResolvedValue({
+        id: ORG_ID,
+        settings: {
+          currency: 'EUR',
+          tse: { enabled: true, provider: 'fiskaly', fiskaly: { apiKey: 'k', apiSecret: 's', tssId: 't' } },
+        },
+      });
+      fiskalyProvider.recordTransaction.mockResolvedValue({
+        provider: 'fiskaly',
+        clientId: ORG_ID,
+        transactionNumber: 7,
+        serialNumber: 'SN',
+        signatureCounter: 1,
+        signatureValue: 'sig',
+        signatureAlgorithm: 'algo',
+        startTime: 't0',
+        endTime: 't1',
+        processType: 'Kassenbeleg-V1',
+        processData: '',
+        qrCodeData: 'qr',
+      });
+
+      const vatSplits = [
+        { rate: 19, grossAmount: 8 },
+        { rate: 7, grossAmount: 2 },
+      ];
+      const result = await service.recordTransaction(ORG_ID, null, { amount: 10, paymentMethod: 'cash', vatSplits });
+
+      expect(fiskalyProvider.recordTransaction).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ vatSplits }),
+      );
+      expect(result).toEqual(expect.objectContaining({ failed: false, vatSplits }));
+    });
+
+    it('attaches vatSplits to the outage-fallback marker too', async () => {
+      organizationRepository.findOne.mockResolvedValue({
+        id: ORG_ID,
+        settings: {
+          tse: { enabled: true, provider: 'fiskaly', fiskaly: { apiKey: 'k', apiSecret: 's', tssId: 't' } },
+        },
+      });
+      fiskalyProvider.recordTransaction.mockRejectedValue(new Error('network down'));
+
+      const vatSplits = [{ rate: 19, grossAmount: 10 }];
+      const result = await service.recordTransaction(ORG_ID, null, { amount: 10, paymentMethod: 'cash', vatSplits });
+
+      expect(result).toEqual(expect.objectContaining({ failed: true, vatSplits }));
     });
   });
 
@@ -184,7 +235,7 @@ describe('TseService', () => {
     });
 
     it('negates a positive amount before signing', async () => {
-      await service.reverseTransaction(ORG_ID, null, { amount: 10, paymentMethod: 'cash' });
+      await service.reverseTransaction(ORG_ID, null, { amount: 10, paymentMethod: 'cash', vatSplits: [{ rate: 19, grossAmount: 10 }] });
 
       expect(fiskalyProvider.recordTransaction).toHaveBeenCalledWith(
         expect.anything(),
@@ -195,11 +246,24 @@ describe('TseService', () => {
     it('always signs a negative amount even if the caller already negated it', async () => {
       // Math.abs before negating -- a caller passing an already-negative
       // amount must not accidentally end up positive (double-negation bug).
-      await service.reverseTransaction(ORG_ID, null, { amount: -10, paymentMethod: 'cash' });
+      await service.reverseTransaction(ORG_ID, null, { amount: -10, paymentMethod: 'cash', vatSplits: [{ rate: 19, grossAmount: -10 }] });
 
       expect(fiskalyProvider.recordTransaction).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({ amount: -10 }),
+      );
+    });
+
+    it('forwards vatSplits through to the signed (negated-amount) transaction', async () => {
+      const vatSplits = [
+        { rate: 19, grossAmount: -8 },
+        { rate: 7, grossAmount: -2 },
+      ];
+      await service.reverseTransaction(ORG_ID, null, { amount: 10, paymentMethod: 'cash', vatSplits });
+
+      expect(fiskalyProvider.recordTransaction).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ amount: -10, vatSplits }),
       );
     });
   });
@@ -228,7 +292,7 @@ describe('TseService', () => {
         qrCodeData: 'qr',
       });
 
-      await service.recordTransaction(ORG_ID, 'device-1', { amount: 10, paymentMethod: 'cash' });
+      await service.recordTransaction(ORG_ID, 'device-1', { amount: 10, paymentMethod: 'cash', vatSplits: [{ rate: 19, grossAmount: 10 }] });
 
       expect(deviceRepository.save).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'device-1', settings: expect.objectContaining({ tseClientId: 'device-1' }) }),
@@ -262,7 +326,7 @@ describe('TseService', () => {
         qrCodeData: 'qr',
       });
 
-      await service.recordTransaction(ORG_ID, 'device-1', { amount: 10, paymentMethod: 'cash' });
+      await service.recordTransaction(ORG_ID, 'device-1', { amount: 10, paymentMethod: 'cash', vatSplits: [{ rate: 19, grossAmount: 10 }] });
 
       expect(deviceRepository.save).not.toHaveBeenCalled();
       expect(fiskalyProvider.recordTransaction).toHaveBeenCalledWith(
@@ -481,7 +545,7 @@ describe('TseService', () => {
         qrCodeData: 'qr',
       });
 
-      await service.recordTransaction(ORG_ID, null, { amount: 10, paymentMethod: 'cash' });
+      await service.recordTransaction(ORG_ID, null, { amount: 10, paymentMethod: 'cash', vatSplits: [] });
 
       expect(fiskalyProvider.ensureClient).toHaveBeenCalledWith(
         expect.objectContaining({ apiKey: 'platform-key', apiSecret: 'platform-secret', tssId: 'tss-2' }),
@@ -503,7 +567,7 @@ describe('TseService', () => {
       });
       configService.get.mockReturnValue('');
 
-      const result = await service.recordTransaction(ORG_ID, null, { amount: 10, paymentMethod: 'cash' });
+      const result = await service.recordTransaction(ORG_ID, null, { amount: 10, paymentMethod: 'cash', vatSplits: [] });
 
       expect(result).toBeNull();
       expect(fiskalyProvider.recordTransaction).not.toHaveBeenCalled();

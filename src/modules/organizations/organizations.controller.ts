@@ -10,6 +10,8 @@ import {
   ParseUUIDPipe,
   HttpCode,
   HttpStatus,
+  Ip,
+  Headers,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { OrganizationsService } from './organizations.service';
@@ -122,6 +124,20 @@ export class OrganizationsController {
     @CurrentUser() user: User,
   ) {
     await this.organizationsService.removeMember(id, memberId, user);
+  }
+
+  @Post(':id/members/:userId/anonymize')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Anonymize a member (DSGVO Art. 17, org admin)' })
+  async anonymizeMember(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('userId', ParseUUIDPipe) userId: string,
+    @CurrentUser() user: User,
+    @Ip() ip: string,
+    @Headers('user-agent') userAgent?: string,
+  ) {
+    await this.organizationsService.anonymizeMember(id, userId, user, ip, userAgent);
+    return { data: { anonymized: true } };
   }
 
   // PIN Management

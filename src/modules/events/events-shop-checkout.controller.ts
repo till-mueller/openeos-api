@@ -51,6 +51,10 @@ import { SumUpApiService } from '../sumup/sumup-api.service';
 import { EmailService } from '../email/email.service';
 import { OrderPrintService } from '../print-jobs/order-print.service';
 import { TseService } from '../tse/tse.service';
+import {
+  splitsFromItems,
+  allocateToAmount,
+} from '../payments/vat-split';
 import { assertTestEventOrderLimitNotReached } from '../../common/utils/test-event-order-limit.util';
 
 interface CreateCheckoutBody {
@@ -629,6 +633,17 @@ export class EventsShopCheckoutController {
       const tseData = await this.tseService.recordTransaction(order.organizationId, null, {
         amount: Number(payment.amount),
         paymentMethod: payment.paymentMethod,
+        vatSplits: allocateToAmount(
+          splitsFromItems(
+            items.map((i) => ({
+              quantity: i.quantity,
+              unitPrice: Number(i.unitPrice),
+              optionsPrice: Number(i.optionsPrice),
+              taxRate: Number(i.taxRate),
+            })),
+          ),
+          Number(payment.amount),
+        ),
       });
       if (tseData) {
         payment.tseData = tseData;

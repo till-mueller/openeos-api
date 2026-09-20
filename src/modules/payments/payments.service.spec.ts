@@ -6,7 +6,7 @@ describe('PaymentsService — TSE hook in create()', () => {
   let paymentRepository: { create: jest.Mock; save: jest.Mock; findOne: jest.Mock };
   let orderRepository: { findOne: jest.Mock; save: jest.Mock };
   let orderItemRepository: { save: jest.Mock };
-  let orderItemPaymentRepository: {};
+  let orderItemPaymentRepository: { create: jest.Mock; save: jest.Mock };
   let userOrganizationRepository: { findOne: jest.Mock };
   let organizationRepository: { findOne: jest.Mock };
   let orderPrintService: { handlePaymentReceived: jest.Mock };
@@ -44,7 +44,10 @@ describe('PaymentsService — TSE hook in create()', () => {
     };
     orderRepository = { findOne: jest.fn(), save: jest.fn(async (o) => o) };
     orderItemRepository = { save: jest.fn() };
-    orderItemPaymentRepository = {};
+    orderItemPaymentRepository = {
+      create: jest.fn((dto) => dto),
+      save: jest.fn(async (p) => p),
+    };
     userOrganizationRepository = { findOne: jest.fn().mockResolvedValue({ id: 'membership-1' }) };
     organizationRepository = { findOne: jest.fn().mockResolvedValue({ id: ORG_ID, name: 'Org', settings: {} }) };
     orderPrintService = { handlePaymentReceived: jest.fn().mockResolvedValue(undefined) };
@@ -135,6 +138,88 @@ describe('PaymentsService — TSE hook in create()', () => {
     await service.create(ORG_ID, createDto, user);
 
     expect(tseService.recordTransaction).toHaveBeenCalledWith(ORG_ID, null, expect.anything());
+  });
+
+  describe('VAT splits', () => {
+    // 2x item@10.00 (19%) + 1x item@5.00 (7%) — total 25.00.
+    const ratedOrder = () => ({
+      ...baseOrder(),
+      total: 25,
+      items: [
+        { id: 'item-1', quantity: 2, unitPrice: 10, optionsPrice: 0, taxRate: 19, paidQuantity: 0 },
+        { id: 'item-2', quantity: 1, unitPrice: 5, optionsPrice: 0, taxRate: 7, paidQuantity: 0 },
+      ],
+    });
+
+    it('signs cash payments with per-rate VAT splits', async () => {
+      orderRepository.findOne.mockResolvedValue(ratedOrder());
+      tseService.recordTransaction.mockResolvedValue(null);
+
+      await service.create(
+        ORG_ID,
+        { orderId: 'order-1', amount: 25, paymentMethod: PaymentMethod.CASH } as any,
+        user,
+      );
+
+      expect(tseService.recordTransaction).toHaveBeenCalledWith(
+        ORG_ID,
+        'device-1',
+        expect.objectContaining({
+          amount: 25,
+          paymentMethod: PaymentMethod.CASH,
+          vatSplits: [
+            { rate: 19, grossAmount: 20 },
+            { rate: 7, grossAmount: 5 },
+          ],
+        }),
+      );
+    });
+
+    it('allocates partial payments proportionally', async () => {
+      orderRepository.findOne.mockResolvedValue(ratedOrder());
+      tseService.recordTransaction.mockResolvedValue(null);
+
+      await service.create(
+        ORG_ID,
+        { orderId: 'order-1', amount: 12.5, paymentMethod: PaymentMethod.CASH } as any,
+        user,
+      );
+
+      const input = tseService.recordTransaction.mock.calls[0][2];
+      expect(input.amount).toBe(12.5);
+      // Splits scale so their sum matches the 12.50 payment exactly.
+      expect(input.vatSplits).toEqual([
+        { rate: 19, grossAmount: 10 },
+        { rate: 7, grossAmount: 2.5 },
+      ]);
+    });
+
+    it('signs split payments with item-exact splits for the rows just paid', async () => {
+      orderRepository.findOne.mockResolvedValue(ratedOrder());
+      tseService.recordTransaction.mockResolvedValue(null);
+
+      // Paying only 1x item-1 (@10, 19%): item-exact is [{19, 10}] — the
+      // whole-order-proportional fallback would wrongly add a 7% line.
+      await service.createSplitPayment(
+        ORG_ID,
+        {
+          orderId: 'order-1',
+          amount: 10,
+          paymentMethod: PaymentMethod.CASH,
+          items: [{ orderItemId: 'item-1', quantity: 1 }],
+        } as any,
+        user,
+      );
+
+      expect(tseService.recordTransaction).toHaveBeenCalledWith(
+        ORG_ID,
+        'device-1',
+        expect.objectContaining({
+          amount: 10,
+          vatSplits: [{ rate: 19, grossAmount: 10 }],
+        }),
+      );
+    });
   });
 
   describe('bewirtungsbelegRequested', () => {
@@ -233,6 +318,61 @@ describe('PaymentsService — TSE hook in create()', () => {
         ORG_ID,
         'device-1',
         expect.objectContaining({ amount: 20, paymentMethod: PaymentMethod.CASH }),
+      );
+    });
+
+    it('reversal negates the original stored splits', async () => {
+      paymentRepository.findOne.mockImplementation(async () => ({
+        ...capturedPayment(),
+        amount: 25,
+        tseData: {
+          vatSplits: [
+            { rate: 19, grossAmount: 20 },
+            { rate: 7, grossAmount: 5 },
+          ],
+        },
+      }));
+      tseService.reverseTransaction.mockResolvedValue(null);
+
+      await service.refund(ORG_ID, 'payment-1', user);
+
+      expect(tseService.reverseTransaction).toHaveBeenCalledWith(
+        ORG_ID,
+        'device-1',
+        expect.objectContaining({
+          amount: 25,
+          vatSplits: [
+            { rate: 19, grossAmount: -20 },
+            { rate: 7, grossAmount: -5 },
+          ],
+        }),
+      );
+    });
+
+    it('reversal falls back to a proportional recompute with negative amount when nothing was stored', async () => {
+      // Same 2x10@19% + 1x5@7% order; original payment (20) has no tseData.
+      orderRepository.findOne.mockResolvedValue({
+        ...baseOrder(),
+        total: 25,
+        items: [
+          { id: 'item-1', quantity: 2, unitPrice: 10, optionsPrice: 0, taxRate: 19, paidQuantity: 0 },
+          { id: 'item-2', quantity: 1, unitPrice: 5, optionsPrice: 0, taxRate: 7, paidQuantity: 0 },
+        ],
+      });
+      tseService.reverseTransaction.mockResolvedValue(null);
+
+      await service.refund(ORG_ID, 'payment-1', user);
+
+      expect(tseService.reverseTransaction).toHaveBeenCalledWith(
+        ORG_ID,
+        'device-1',
+        expect.objectContaining({
+          amount: 20,
+          vatSplits: [
+            { rate: 19, grossAmount: -16 },
+            { rate: 7, grossAmount: -4 },
+          ],
+        }),
       );
     });
 

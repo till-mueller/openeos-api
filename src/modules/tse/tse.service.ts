@@ -9,7 +9,7 @@ import { TseTransactionData } from '../../database/entities/payment.entity';
 import { ErrorCodes } from '../../common/constants/error-codes';
 import { FiskalyTseProvider } from './providers/fiskaly-tse.provider';
 import { LocalTseProvider } from './providers/local-tse.provider';
-import { TseExportResult, TseFiskalyConfig, TseLocalConfig, TseProvider } from './tse.interface';
+import { TseExportResult, TseFiskalyConfig, TseLocalConfig, TseProvider, TseVatSplit } from './tse.interface';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 
 type TseConfig = NonNullable<OrganizationSettings['tse']>;
@@ -90,7 +90,7 @@ export class TseService {
   async recordTransaction(
     organizationId: string,
     deviceId: string | null,
-    input: { amount: number; paymentMethod: string },
+    input: { amount: number; paymentMethod: string; vatSplits: TseVatSplit[] },
   ): Promise<TseTransactionData | null> {
     const organization = await this.organizationRepository.findOne({
       where: { id: organizationId },
@@ -110,8 +110,9 @@ export class TseService {
         amount: input.amount,
         currency: organization?.settings?.currency ?? 'EUR',
         paymentMethod: input.paymentMethod,
+        vatSplits: input.vatSplits,
       });
-      return { ...result, failed: false };
+      return { ...result, vatSplits: input.vatSplits, failed: false };
     } catch (error) {
       this.logger.error(
         `TSE transaction failed for org ${organizationId} (client ${clientId}): ${(error as Error).message}`,
@@ -132,6 +133,7 @@ export class TseService {
         qrCodeData: '',
         failed: true,
         failureReason: (error as Error).message,
+        vatSplits: input.vatSplits,
       };
     }
   }
@@ -153,7 +155,7 @@ export class TseService {
   async reverseTransaction(
     organizationId: string,
     deviceId: string | null,
-    input: { amount: number; paymentMethod: string },
+    input: { amount: number; paymentMethod: string; vatSplits: TseVatSplit[] },
   ): Promise<TseTransactionData | null> {
     return this.recordTransaction(organizationId, deviceId, {
       ...input,
@@ -275,7 +277,7 @@ export class TseService {
       });
     }
 
-    const platformCredential = await this.getPlatformFiskalyCredential();
+const platformCredential = await this.getPlatformFiskalyCredential();
     if (!platformCredential) {
       return { ok: false, message: 'TSE-Reseller-Modus ist auf dieser Instanz nicht konfiguriert' };
     }

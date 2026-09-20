@@ -20,6 +20,7 @@ export enum AdminAction {
   ASSIGN_RENTAL = 'assign_rental',
   RETURN_RENTAL = 'return_rental',
   IMPORT_CUSTOMER = 'import_customer',
+  ANONYMIZE_USER = 'anonymize_user',
 }
 
 export interface AuditLogDetails {

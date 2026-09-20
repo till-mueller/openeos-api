@@ -20,7 +20,7 @@ describe('TseController', () => {
     controller = new TseController(tseService as unknown as TseService);
   });
 
-  it('resellerAvailable wraps the service result in { data }', async () => {
+it('resellerAvailable wraps the service result in { data }', async () => {
     tseService.isResellerModeAvailable.mockResolvedValue(true);
 
     const result = await controller.resellerAvailable();

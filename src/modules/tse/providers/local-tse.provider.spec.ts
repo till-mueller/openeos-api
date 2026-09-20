@@ -14,7 +14,14 @@ describe('LocalTseProvider', () => {
   });
 
   describe('recordTransaction', () => {
-    const input = { organizationId: 'org-1', clientId: 'client-1', amount: 10, currency: 'EUR', paymentMethod: 'cash' };
+    const input = {
+      organizationId: 'org-1',
+      clientId: 'client-1',
+      amount: 10,
+      currency: 'EUR',
+      paymentMethod: 'cash',
+      vatSplits: [{ rate: 19, grossAmount: 10 }],
+    };
 
     it('dispatches a sign job to the configured agent device and maps the response', async () => {
       gatewayService.sendTseJobToAgent.mockResolvedValue({
