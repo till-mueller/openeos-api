@@ -207,6 +207,51 @@ describe('TseService', () => {
 
       expect(result).toEqual(expect.objectContaining({ failed: true, vatSplits }));
     });
+
+    it('stores structured errorCode/httpStatus/failedAt on the failure marker', async () => {
+      fiskalyProvider.recordTransaction.mockRejectedValue(
+        new Error('fiskaly PUT /tss/x/tx/y failed: 400 {"code":"E_TSS_CREATED","message":"boom"}'),
+      );
+      organizationRepository.findOne.mockResolvedValue({
+        id: ORG_ID,
+        settings: {
+          tse: { enabled: true, provider: 'fiskaly', fiskaly: { tssId: 'tss-1' } },
+        },
+      });
+      fiskalyProvider.ensureClient.mockResolvedValue(undefined);
+
+      const result = await service.recordTransaction(ORG_ID, 'device-1', {
+        amount: 20,
+        paymentMethod: 'cash',
+        vatSplits: [],
+      });
+
+      expect(result?.failed).toBe(true);
+      expect(result?.errorCode).toBe('TSS_NOT_INITIALIZED');
+      expect(result?.httpStatus).toBe(400);
+      expect(result?.failedAt).toEqual(expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/));
+    });
+
+    it('marks transport failures as NETWORK with no httpStatus', async () => {
+      fiskalyProvider.recordTransaction.mockRejectedValue(new TypeError('fetch failed'));
+      organizationRepository.findOne.mockResolvedValue({
+        id: ORG_ID,
+        settings: {
+          tse: { enabled: true, provider: 'fiskaly', fiskaly: { tssId: 'tss-1' } },
+        },
+      });
+      fiskalyProvider.ensureClient.mockResolvedValue(undefined);
+
+      const result = await service.recordTransaction(ORG_ID, 'device-1', {
+        amount: 20,
+        paymentMethod: 'cash',
+        vatSplits: [],
+      });
+
+      expect(result?.failed).toBe(true);
+      expect(result?.errorCode).toBe('NETWORK');
+      expect(result?.httpStatus).toBeUndefined();
+    });
   });
 
   describe('reverseTransaction', () => {

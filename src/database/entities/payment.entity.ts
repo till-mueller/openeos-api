@@ -61,6 +61,14 @@ export interface TseTransactionData {
   vatSplits?: { rate: number; grossAmount: number }[];
   failed?: boolean;
   failureReason?: string;
+  /** Structured failure detail (set when failed: true). errorCode uses the
+   *  TseService mapping (TSS_NOT_INITIALIZED, TSE_ADMIN_AUTH, raw fiskaly
+   *  code, HTTP_<status>, NETWORK). */
+  errorCode?: string;
+  /** HTTP status from the provider/transport when available. */
+  httpStatus?: number;
+  /** ISO timestamp of the failed attempt. */
+  failedAt?: string;
 }
 
 @Entity('payments')

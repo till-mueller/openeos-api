@@ -7,6 +7,7 @@ import { Device } from '../../database/entities/device.entity';
 import { UserOrganization } from '../../database/entities/user-organization.entity';
 import { TseTransactionData } from '../../database/entities/payment.entity';
 import { ErrorCodes } from '../../common/constants/error-codes';
+import { parseFiskalyFailure, mapTseErrorCode } from './fiskaly-errors';
 import { FiskalyTseProvider } from './providers/fiskaly-tse.provider';
 import { LocalTseProvider } from './providers/local-tse.provider';
 import { TseExportResult, TseFiskalyConfig, TseLocalConfig, TseProvider, TseVatSplit } from './tse.interface';
@@ -114,10 +115,13 @@ export class TseService {
       });
       return { ...result, vatSplits: input.vatSplits, failed: false };
     } catch (error) {
-      this.logger.error(
-        `TSE transaction failed for org ${organizationId} (client ${clientId}): ${(error as Error).message}`,
-      );
+      const parsed = parseFiskalyFailure(error);
+      const errorCode = mapTseErrorCode(parsed.fiskalyCode, parsed.httpStatus);
       const now = new Date().toISOString();
+      this.logger.error(
+        `TSE transaction failed for org ${organizationId} (client ${clientId}, tssId ${(config as { tssId?: string }).tssId ?? 'n/a'}, errorCode ${errorCode}, httpStatus ${parsed.httpStatus ?? 'n/a'}): ${parsed.failureReason}`,
+        (error as Error).stack,
+      );
       return {
         provider: provider.name,
         clientId,
@@ -132,7 +136,10 @@ export class TseService {
         processData: '',
         qrCodeData: '',
         failed: true,
-        failureReason: (error as Error).message,
+        failureReason: parsed.failureReason,
+        errorCode,
+        httpStatus: parsed.httpStatus,
+        failedAt: now,
         vatSplits: input.vatSplits,
       };
     }
