@@ -193,16 +193,24 @@ export class InvoicesService {
     return invoice;
   }
 
+  /**
+   * Atomic per-month sequence via upsert — no COUNT race, no burned numbers
+   * on retry (GoBD Lückenlosigkeit). The allocated value is next_value - 1
+   * after the statement (insert starts at 2 so the first allocation is 1).
+   */
   private async generateInvoiceNumber(): Promise<string> {
     const date = new Date();
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const yearMonth = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}`;
 
-    const count = await this.invoiceRepository
-      .createQueryBuilder('invoice')
-      .where('invoice.invoiceNumber LIKE :prefix', { prefix: `INV-${year}${month}%` })
-      .getCount();
+    const rows: { value: number }[] = await this.invoiceRepository.query(
+      `INSERT INTO "invoice_counters" ("year_month", "next_value")
+       VALUES ($1, 2)
+       ON CONFLICT ("year_month")
+       DO UPDATE SET "next_value" = invoice_counters."next_value" + 1
+       RETURNING "next_value" - 1 AS value`,
+      [yearMonth],
+    );
 
-    return `INV-${year}${month}-${String(count + 1).padStart(4, '0')}`;
+    return `INV-${yearMonth}-${String(rows[0].value).padStart(4, '0')}`;
   }
 }
