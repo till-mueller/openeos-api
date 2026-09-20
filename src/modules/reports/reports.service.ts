@@ -1,7 +1,7 @@
 import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Between, MoreThanOrEqual, LessThanOrEqual } from 'typeorm';
+import { Repository, Between, MoreThanOrEqual, LessThanOrEqual, In } from 'typeorm';
 import {
   Order,
   OrderItem,
@@ -21,7 +21,7 @@ import {
 } from '../../database/entities/user-organization.entity';
 import { OrderStatus } from '../../database/entities/order.entity';
 import { DeviceType } from '../../database/entities/device.entity';
-import { PaymentTransactionStatus } from '../../database/entities/payment.entity';
+import { PaymentMethod, PaymentTransactionStatus } from '../../database/entities/payment.entity';
 import { QueryReportsDto, ReportGroupBy, ReportExportFormat } from './dto';
 import { ErrorCodes } from '../../common/constants/error-codes';
 import { endOfDay } from '../../common/utils/date-range.util';
@@ -62,6 +62,19 @@ export interface DeviceReport {
   name: string;
   orders: number;
   revenue: number;
+}
+
+export interface ServerReport {
+  /** null = payments taken without a staff PIN login ("Hauptkasse"/main register). */
+  userId: string | null;
+  name: string;
+  role: OrganizationRole | null;
+  commissionPercent: number;
+  ordersCount: number;
+  totalSold: number;
+  cashTotal: number;
+  cardTotal: number;
+  commissionEarned: number;
 }
 
 export interface ProductReport {
@@ -645,6 +658,106 @@ export class ReportsService {
     }));
   }
 
+  /**
+   * Per-server ("Kellner:in") breakdown of captured payments: who sold how
+   * much, split cash vs. card, plus their configured commission cut.
+   *
+   * Attribution is Payment.processedByUserId — whoever was logged in via
+   * PIN on the device when the payment captured. Payments taken without a
+   * PIN login (processedByUserId null) are bucketed as the "Hauptkasse"
+   * (main register) row, which structurally can't earn commission — there's
+   * no membership row to hang a percentage on.
+   */
+  async getServersReport(
+    organizationId: string,
+    queryDto: QueryReportsDto,
+    user: User,
+  ): Promise<ServerReport[]> {
+    await this.checkPermission(organizationId, user.id);
+    const { eventId, startDate, endDate } = queryDto;
+
+    const queryBuilder = this.paymentRepository
+      .createQueryBuilder('payment')
+      .innerJoin('payment.order', 'order')
+      .leftJoin('payment.processedByUser', 'server')
+      .where('order.organizationId = :organizationId', { organizationId })
+      .andWhere('payment.status = :paymentStatus', {
+        paymentStatus: PaymentTransactionStatus.CAPTURED,
+      });
+
+    if (eventId) {
+      queryBuilder.andWhere('order.eventId = :eventId', { eventId });
+    }
+
+    if (startDate && endDate) {
+      queryBuilder.andWhere('payment.createdAt BETWEEN :startDate AND :endDate', {
+        startDate: new Date(startDate),
+        endDate: endOfDay(endDate),
+      });
+    } else if (startDate) {
+      queryBuilder.andWhere('payment.createdAt >= :startDate', {
+        startDate: new Date(startDate),
+      });
+    } else if (endDate) {
+      queryBuilder.andWhere('payment.createdAt <= :endDate', {
+        endDate: endOfDay(endDate),
+      });
+    }
+
+    const results = await queryBuilder
+      .select([
+        'payment.processedByUserId as "userId"',
+        'server.firstName as "firstName"',
+        'server.lastName as "lastName"',
+        'COUNT(DISTINCT payment.orderId) as "ordersCount"',
+        `SUM(CASE WHEN payment.paymentMethod = '${PaymentMethod.CASH}' THEN payment.amount ELSE 0 END) as "cashTotal"`,
+        `SUM(CASE WHEN payment.paymentMethod != '${PaymentMethod.CASH}' THEN payment.amount ELSE 0 END) as "cardTotal"`,
+        'SUM(payment.amount) as "totalSold"',
+      ])
+      .groupBy('payment.processedByUserId')
+      .addGroupBy('server.firstName')
+      .addGroupBy('server.lastName')
+      .orderBy('SUM(payment.amount)', 'DESC')
+      .getRawMany<{
+        userId: string | null;
+        firstName: string | null;
+        lastName: string | null;
+        ordersCount: string;
+        cashTotal: string;
+        cardTotal: string;
+        totalSold: string;
+      }>();
+
+    const userIds = results.map((r) => r.userId).filter((id): id is string => !!id);
+    const memberships = userIds.length
+      ? await this.userOrganizationRepository.find({
+          where: { organizationId, userId: In(userIds) },
+        })
+      : [];
+    const membershipByUserId = new Map(memberships.map((m) => [m.userId, m]));
+
+    return results.map((r) => {
+      const membership = r.userId ? membershipByUserId.get(r.userId) : undefined;
+      const commissionPercent = membership ? Number(membership.commissionPercent) : 0;
+      const totalSold = Number(r.totalSold || 0);
+      const name = r.userId
+        ? `${r.firstName ?? ''} ${r.lastName ?? ''}`.trim() || 'Unbekannt'
+        : 'Hauptkasse';
+
+      return {
+        userId: r.userId,
+        name,
+        role: membership?.role ?? null,
+        commissionPercent,
+        ordersCount: Number(r.ordersCount || 0),
+        totalSold,
+        cashTotal: Number(r.cashTotal || 0),
+        cardTotal: Number(r.cardTotal || 0),
+        commissionEarned: (totalSold * commissionPercent) / 100,
+      };
+    });
+  }
+
   async getInventoryReport(
     eventId: string,
     user: User,
@@ -759,6 +872,9 @@ export class ReportsService {
         break;
       case 'devices':
         reportData = await this.getDevicesReport(organizationId, queryDto, user);
+        break;
+      case 'servers':
+        reportData = await this.getServersReport(organizationId, queryDto, user);
         break;
       case 'inventory':
         if (queryDto.eventId) {

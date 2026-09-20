@@ -295,6 +295,7 @@ export class OrganizationsService {
       userId: user.id,
       role: addMemberDto.role,
       permissions: addMemberDto.role === OrganizationRole.ADMIN ? {} : (addMemberDto.permissions || {}),
+      commissionPercent: addMemberDto.commissionPercent ?? 0,
     });
 
     await this.userOrganizationRepository.save(userOrganization);
@@ -348,6 +349,9 @@ export class OrganizationsService {
     if (updateDto.permissions !== undefined) {
       // Admins don't need permissions
       member.permissions = member.role === OrganizationRole.ADMIN ? {} : updateDto.permissions;
+    }
+    if (updateDto.commissionPercent !== undefined) {
+      member.commissionPercent = updateDto.commissionPercent;
     }
 
     await this.userOrganizationRepository.save(member);

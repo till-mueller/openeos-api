@@ -127,6 +127,21 @@ export class ReportsController {
     return { data: report };
   }
 
+  @Get('servers')
+  @Roles(Role.MEMBER)
+  async getServersReport(
+    @CurrentOrganization() organizationId: string,
+    @Query() queryDto: QueryReportsDto,
+    @CurrentUser() user: User,
+  ) {
+    const report = await this.reportsService.getServersReport(
+      organizationId,
+      queryDto,
+      user,
+    );
+    return { data: report };
+  }
+
   @Get('inventory')
   @Roles(Role.MEMBER)
   async getInventoryReport(

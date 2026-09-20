@@ -1,4 +1,4 @@
-import { IsEmail, IsEnum, IsOptional, IsObject } from 'class-validator';
+import { IsEmail, IsEnum, IsOptional, IsObject, IsNumber, Min, Max } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { OrganizationRole } from '../../../database/entities/user-organization.entity';
 import type { OrganizationPermissions } from '../../../database/entities/user-organization.entity';
@@ -16,6 +16,13 @@ export class AddMemberDto {
   @IsOptional()
   @IsObject()
   permissions?: OrganizationPermissions;
+
+  @ApiPropertyOptional({ example: 10, description: 'Provision in Prozent auf den von dieser Person verkauften Umsatz' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  commissionPercent?: number;
 }
 
 export class UpdateMemberDto {
@@ -28,4 +35,11 @@ export class UpdateMemberDto {
   @IsOptional()
   @IsObject()
   permissions?: OrganizationPermissions;
+
+  @ApiPropertyOptional({ example: 10, description: 'Provision in Prozent auf den von dieser Person verkauften Umsatz' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  commissionPercent?: number;
 }
