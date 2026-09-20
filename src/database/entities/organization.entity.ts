@@ -41,6 +41,18 @@ export interface OrganizationSettings {
    */
   vatExempt?: boolean;
   /**
+   * Rechtstexte dieser Organisation (Markdown), die der oeffentliche Shop
+   * ausliefert: Impressum (§ 5 DDG), Datenschutz (DSGVO), AGB und
+   * Widerrufsbelehrung. openEOS rendert sie, beurteilt sie aber nicht —
+   * Verkaeuferin ist die Organisation selbst.
+   */
+  legal?: {
+    imprint?: string;
+    privacy?: string;
+    terms?: string;
+    cancellation?: string;
+  };
+  /**
    * Who keeps tips, for DSFinV-K's GV_TYP: 'staff' -> TrinkgeldAN (staff
    * keeps it, doesn't touch the org's own revenue), 'business' ->
    * TrinkgeldAG (tip belongs to the org like any other sale). Defaults to
