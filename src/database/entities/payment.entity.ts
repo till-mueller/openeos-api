@@ -57,6 +57,8 @@ export interface TseTransactionData {
   processData: string;
   /** Pre-built payload for the receipt's TSE QR code. */
   qrCodeData: string;
+  /** Per-rate gross splits exactly as signed — the audit trail for what the TSE was told. */
+  vatSplits?: { rate: number; grossAmount: number }[];
   failed?: boolean;
   failureReason?: string;
 }

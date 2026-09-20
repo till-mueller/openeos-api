@@ -78,6 +78,8 @@ export class TseService {
         amount: input.amount,
         currency: organization?.settings?.currency ?? 'EUR',
         paymentMethod: input.paymentMethod,
+        // Interim until Task 3 wires real per-item splits — preserves pre-compliance behavior exactly.
+        vatSplits: [{ rate: 19, grossAmount: input.amount }],
       });
       return { ...result, failed: false };
     } catch (error) {

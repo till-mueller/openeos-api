@@ -201,7 +201,10 @@ export class FiskalyTseProvider implements TseProvider<TseFiskalyConfig> {
           standard_v1: {
             receipt: {
               receipt_type: 'RECEIPT',
-              amounts_per_vat_rate: [{ vat_rate: 'NORMAL', amount: input.amount.toFixed(2) }],
+              amounts_per_vat_rate: input.vatSplits.map((s) => ({
+                vat_rate: fiskalyVatRateFor(s.rate),
+                amount: s.grossAmount.toFixed(2),
+              })),
               amounts_per_payment_type: [
                 { payment_type: mapPaymentType(input.paymentMethod), amount: input.amount.toFixed(2) },
               ],
@@ -324,6 +327,20 @@ export class FiskalyTseProvider implements TseProvider<TseFiskalyConfig> {
 
 function mapPaymentType(method: string): 'CASH' | 'NON_CASH' {
   return method === 'cash' ? 'CASH' : 'NON_CASH';
+}
+
+/**
+ * fiskaly standard_v1 vat_rate enum. German rates only (tax-rates.ts);
+ * both genuinely-zero-rated lines and §19-exempt orgs sign as NULL (an
+ * exempt org can only have 0% products, so the rate alone decides).
+ * An unmapped rate must throw — a silently wrong rate on a signed
+ * transaction is worse than a failed one (which records a TSE outage).
+ */
+export function fiskalyVatRateFor(rate: number): 'NORMAL' | 'REDUCED' | 'NULL' {
+  if (rate === 19) return 'NORMAL';
+  if (rate === 7) return 'REDUCED';
+  if (rate === 0) return 'NULL';
+  throw new Error(`No fiskaly vat_rate mapping for tax rate ${rate}`);
 }
 
 function sleep(ms: number): Promise<void> {

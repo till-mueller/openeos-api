@@ -1,4 +1,4 @@
-import { FiskalyTseProvider } from './fiskaly-tse.provider';
+import { FiskalyTseProvider, fiskalyVatRateFor } from './fiskaly-tse.provider';
 
 const config = { apiKey: 'k', apiSecret: 's', tssId: 'tss-1' };
 
@@ -106,6 +106,7 @@ describe('FiskalyTseProvider', () => {
         amount: 12.5,
         currency: 'EUR',
         paymentMethod: 'cash',
+        vatSplits: [{ rate: 19, grossAmount: 12.5 }],
       });
 
       expect(result).toEqual(
@@ -136,6 +137,7 @@ describe('FiskalyTseProvider', () => {
           amount: 12.5,
           currency: 'EUR',
           paymentMethod: 'cash',
+          vatSplits: [{ rate: 19, grossAmount: 12.5 }],
         }),
       ).rejects.toThrow(/signature/);
     });
@@ -151,8 +153,58 @@ describe('FiskalyTseProvider', () => {
           amount: 12.5,
           currency: 'EUR',
           paymentMethod: 'cash',
+          vatSplits: [{ rate: 19, grossAmount: 12.5 }],
         }),
       ).rejects.toThrow(/400/);
+    });
+  });
+
+  describe('fiskalyVatRateFor', () => {
+    it('maps German rates to the fiskaly enum', () => {
+      expect(fiskalyVatRateFor(19)).toBe('NORMAL');
+      expect(fiskalyVatRateFor(7)).toBe('REDUCED');
+      expect(fiskalyVatRateFor(0)).toBe('NULL');
+    });
+
+    it('throws on unmapped rates', () => {
+      expect(() => fiskalyVatRateFor(10)).toThrow('No fiskaly vat_rate mapping');
+    });
+  });
+
+  describe('recordTransaction vat splits', () => {
+    it('sends one amounts_per_vat_rate line per split', async () => {
+      mockAuth();
+      fetchMock.mockResolvedValueOnce(jsonResponse({ number: 1, time_start: 't0', state: 'ACTIVE' })); // start
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({
+          number: 7,
+          time_start: 't0',
+          time_end: 't1',
+          state: 'FINISHED',
+          signature: { value: 'sig-val', algorithm: 'ecdsa', public_key: 'pk', counter: 3, time: 1 },
+        }),
+      ); // finish
+      fetchMock.mockResolvedValueOnce(jsonResponse({ serial_number: 'SN-1' })); // GET tss
+
+      await provider.recordTransaction(config, {
+        organizationId: 'org-1',
+        clientId: 'client-1',
+        amount: 26,
+        currency: 'EUR',
+        paymentMethod: 'cash',
+        vatSplits: [
+          { rate: 19, grossAmount: 21 },
+          { rate: 7, grossAmount: 5 },
+        ],
+      });
+
+      // Call order: 0=auth, 1=start PUT, 2=finish PUT, 3=GET tss.
+      const [, finishInit] = fetchMock.mock.calls[2];
+      const finishBody = JSON.parse((finishInit as RequestInit).body as string);
+      expect(finishBody.schema.standard_v1.receipt.amounts_per_vat_rate).toEqual([
+        { vat_rate: 'NORMAL', amount: '21.00' },
+        { vat_rate: 'REDUCED', amount: '5.00' },
+      ]);
     });
   });
 

@@ -42,6 +42,12 @@ export interface TseTransactionInput {
   amount: number;
   currency: string;
   paymentMethod: string;
+  /**
+   * Per-rate gross splits; sum must equal `amount` exactly (callers use
+   * allocateToAmount). KassenSichV/DSFinV-K require the true rate split —
+   * sending the full amount at NORMAL was the pre-compliance behavior.
+   */
+  vatSplits: TseVatSplit[];
 }
 
 export interface TseExportInput {
