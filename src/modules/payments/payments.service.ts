@@ -33,6 +33,11 @@ import { OrderPrintService } from '../print-jobs/order-print.service';
 import { TseService } from '../tse/tse.service';
 import { ReceiptPdfService } from './receipt-pdf.service';
 import { EmailService } from '../email/email.service';
+import {
+  splitsFromItems,
+  allocateToAmount,
+  negateSplits,
+} from './vat-split';
 
 @Injectable()
 export class PaymentsService {
@@ -186,18 +191,43 @@ export class PaymentsService {
    * Sign the captured payment through the org's TSE and persist the result.
    * Best-effort: never throws — a TSE outage must not block the sale (see
    * TseService.recordTransaction). No-op when TSE isn't configured.
+   *
+   * VAT splits: item-exact rows for split payments, whole-order composition
+   * otherwise; always allocateToAmount(payment.amount) so the signed split
+   * sum matches the payment to the cent (discounts/service fees included).
    */
   private async signPaymentWithTse(
     order: Order,
     payment: Payment,
+    splitItems?: { item: OrderItem; quantityToPayNow: number }[],
   ): Promise<void> {
     try {
+      const baseSplits = splitItems?.length
+        ? splitsFromItems(
+            splitItems.map(({ item, quantityToPayNow }) => ({
+              quantity: quantityToPayNow,
+              unitPrice: Number(item.unitPrice),
+              optionsPrice: Number(item.optionsPrice),
+              taxRate: Number(item.taxRate),
+            })),
+          )
+        : splitsFromItems(
+            order.items.map((i) => ({
+              quantity: i.quantity,
+              unitPrice: Number(i.unitPrice),
+              optionsPrice: Number(i.optionsPrice),
+              taxRate: Number(i.taxRate),
+            })),
+          );
+      const vatSplits = allocateToAmount(baseSplits, Number(payment.amount));
+
       const tseData = await this.tseService.recordTransaction(
         order.organizationId,
         order.createdByDeviceId ?? null,
         {
           amount: Number(payment.amount),
           paymentMethod: payment.paymentMethod,
+          vatSplits,
         },
       );
       if (tseData) {
@@ -405,8 +435,9 @@ export class PaymentsService {
       `Split payment created: ${payment.id} for order ${order.orderNumber}`,
     );
 
-    // Sign through the TSE before printing (see create() above).
-    await this.signPaymentWithTse(order, payment);
+    // Sign through the TSE before printing (see create() above). Item-exact
+    // splits from the rows this split just paid.
+    await this.signPaymentWithTse(order, payment, itemsToUpdate);
 
     // Trigger auto-printing for payment
     const isFullyPaid = Number(order.paidAmount) >= Number(order.total);
@@ -585,12 +616,27 @@ export class PaymentsService {
   ): Promise<void> {
     if (!order) return;
     try {
+      const storedSplits = originalPayment.tseData?.vatSplits;
+      const vatSplits = storedSplits?.length
+        ? negateSplits(storedSplits)
+        : allocateToAmount(
+            splitsFromItems(
+              order.items.map((i) => ({
+                quantity: i.quantity,
+                unitPrice: Number(i.unitPrice),
+                optionsPrice: Number(i.optionsPrice),
+                taxRate: Number(i.taxRate),
+              })),
+            ),
+            -Number(originalPayment.amount),
+          );
       const tseData = await this.tseService.reverseTransaction(
         organizationId,
         order.createdByDeviceId ?? null,
         {
           amount: Number(originalPayment.amount),
           paymentMethod: originalPayment.paymentMethod,
+          vatSplits,
         },
       );
       const reversal = this.paymentRepository.create({
