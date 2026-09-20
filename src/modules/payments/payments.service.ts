@@ -234,6 +234,11 @@ export class PaymentsService {
         payment.tseData = tseData;
         await this.paymentRepository.save(payment);
       }
+      if (tseData?.failed) {
+        this.logger.error(
+          `TSE signing failed: org ${order.organizationId}, order ${order.orderNumber} (${order.id}), payment ${payment.id}, device ${order.createdByDeviceId ?? 'none'}, errorCode ${tseData.errorCode ?? 'n/a'}, httpStatus ${tseData.httpStatus ?? 'n/a'}: ${tseData.failureReason ?? 'unknown'}`,
+        );
+      }
     } catch (error) {
       this.logger.error(
         `TSE signing failed for payment ${payment.id}: ${(error as Error).message}`,
@@ -649,6 +654,11 @@ export class PaymentsService {
         tseData: tseData ?? null,
       });
       await this.paymentRepository.save(reversal);
+      if (tseData?.failed) {
+        this.logger.error(
+          `TSE reversal signing failed: org ${organizationId}, order ${order?.orderNumber ?? order?.id ?? 'n/a'}, payment ${originalPayment.id}, device ${order?.createdByDeviceId ?? 'none'}, errorCode ${tseData.errorCode ?? 'n/a'}, httpStatus ${tseData.httpStatus ?? 'n/a'}: ${tseData.failureReason ?? 'unknown'}`,
+        );
+      }
     } catch (error) {
       this.logger.error(
         `TSE reversal signing failed for payment ${originalPayment.id}: ${(error as Error).message}`,

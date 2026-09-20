@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { PaymentsService } from './payments.service';
 import { PaymentMethod, PaymentTransactionStatus } from '../../database/entities/payment.entity';
 import { PaymentStatus } from '../../database/entities/order.entity';
@@ -382,6 +383,46 @@ describe('PaymentsService — TSE hook in create()', () => {
       const result = await service.refund(ORG_ID, 'payment-1', user);
 
       expect(result).toBeDefined();
+    });
+  });
+
+  describe('signPaymentWithTse structured failure logging', () => {
+    it('logs a structured context line when the TSE signing failed', async () => {
+      const logSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      try {
+        orderRepository.findOne.mockResolvedValue(baseOrder());
+        tseService.recordTransaction.mockResolvedValue({
+          provider: 'fiskaly',
+          clientId: 'device-1',
+          transactionNumber: 0,
+          serialNumber: '',
+          signatureCounter: 0,
+          signatureValue: '',
+          signatureAlgorithm: '',
+          startTime: 't0',
+          endTime: 't1',
+          processType: 'Kassenbeleg-V1',
+          processData: '',
+          qrCodeData: '',
+          failed: true,
+          failureReason: 'fiskaly PUT /tss/x/tx/y failed: 400 {"code":"E_TSS_CREATED"}',
+          errorCode: 'TSS_NOT_INITIALIZED',
+          httpStatus: 400,
+          failedAt: '2026-09-20T10:00:00.000Z',
+          vatSplits: [],
+        });
+
+        await service.create(ORG_ID, createDto, user);
+
+        const calls = logSpy.mock.calls.map((c) => String(c[0]));
+        const failureLine = calls.find((c) => c.includes('TSE signing failed'));
+        expect(failureLine).toContain('errorCode TSS_NOT_INITIALIZED');
+        expect(failureLine).toContain('httpStatus 400');
+        expect(failureLine).toContain('order-1');
+        expect(failureLine).toContain('payment-1');
+      } finally {
+        logSpy.mockRestore();
+      }
     });
   });
 });
