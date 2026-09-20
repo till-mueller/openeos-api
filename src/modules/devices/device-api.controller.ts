@@ -68,6 +68,11 @@ import { PfandTypesService } from '../pfand-types/pfand-types.service';
 import { PfandReturnsService } from '../pfand-types/pfand-returns.service';
 import { CreatePfandReturnDto } from '../pfand-types/dto';
 import { TseService } from '../tse/tse.service';
+import {
+  splitsFromItems,
+  allocateToAmount,
+  negateSplits,
+} from '../payments/vat-split';
 import { isPfandChargedForFulfillment } from '../../common/utils/pfand-policy';
 import { assertTestEventOrderLimitNotReached } from '../../common/utils/test-event-order-limit.util';
 
@@ -143,12 +148,39 @@ export class DeviceApiController {
    * it doesn't throw). Best-effort: never throws -- a TSE outage must not
    * block the sale.
    */
-  private async signPaymentWithTse(order: Order, payment: Payment): Promise<void> {
+  private async signPaymentWithTse(
+    order: Order,
+    payment: Payment,
+    splitItems?: { item: OrderItem; quantityToPayNow: number }[],
+  ): Promise<void> {
     try {
+      const baseSplits = splitItems?.length
+        ? splitsFromItems(
+            splitItems.map(({ item, quantityToPayNow }) => ({
+              quantity: quantityToPayNow,
+              unitPrice: Number(item.unitPrice),
+              optionsPrice: Number(item.optionsPrice),
+              taxRate: Number(item.taxRate),
+            })),
+          )
+        : splitsFromItems(
+            order.items.map((i) => ({
+              quantity: i.quantity,
+              unitPrice: Number(i.unitPrice),
+              optionsPrice: Number(i.optionsPrice),
+              taxRate: Number(i.taxRate),
+            })),
+          );
+      const vatSplits = allocateToAmount(baseSplits, Number(payment.amount));
+
       const tseData = await this.tseService.recordTransaction(
         order.organizationId,
         order.createdByDeviceId ?? null,
-        { amount: Number(payment.amount), paymentMethod: payment.paymentMethod },
+        {
+          amount: Number(payment.amount),
+          paymentMethod: payment.paymentMethod,
+          vatSplits,
+        },
       );
       if (tseData) {
         payment.tseData = tseData;
@@ -862,8 +894,12 @@ export class DeviceApiController {
     );
 
     // Sign through the TSE before printing, so the receipt can carry the
-    // signature/QR code.
-    await this.signPaymentWithTse(order, payment);
+    // signature/QR code. Item-exact splits from the rows this split just paid.
+    await this.signPaymentWithTse(
+      order,
+      payment,
+      itemsToUpdate.map(({ item, payQty }) => ({ item, quantityToPayNow: payQty })),
+    );
 
     // Auto-open cash drawer on cash payment
     if (createDto.paymentMethod === PaymentMethod.CASH) {
@@ -1225,10 +1261,24 @@ export class DeviceApiController {
     });
     for (const original of capturedPayments) {
       try {
+        const storedSplits = original.tseData?.vatSplits;
+        const vatSplits = storedSplits?.length
+          ? negateSplits(storedSplits)
+          : allocateToAmount(
+              splitsFromItems(
+                order.items.map((i) => ({
+                  quantity: i.quantity,
+                  unitPrice: Number(i.unitPrice),
+                  optionsPrice: Number(i.optionsPrice),
+                  taxRate: Number(i.taxRate),
+                })),
+              ),
+              -Number(original.amount),
+            );
         const tseData = await this.tseService.reverseTransaction(
           organizationId,
           order.createdByDeviceId ?? null,
-          { amount: Number(original.amount), paymentMethod: original.paymentMethod },
+          { amount: Number(original.amount), paymentMethod: original.paymentMethod, vatSplits },
         );
         const reversal = this.paymentRepository.create({
           orderId: original.orderId,
