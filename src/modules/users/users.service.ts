@@ -11,6 +11,10 @@ import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { User, RefreshToken, UserPreferences } from '../../database/entities';
+import {
+  UserOrganization,
+  OrganizationRole,
+} from '../../database/entities/user-organization.entity';
 import { ErrorCodes } from '../../common/constants/error-codes';
 import { UpdateProfileDto, UpdatePreferencesDto, RequestEmailChangeDto } from './dto';
 
@@ -25,6 +29,8 @@ export class UsersService {
     private readonly userRepository: Repository<User>,
     @InjectRepository(RefreshToken)
     private readonly refreshTokenRepository: Repository<RefreshToken>,
+    @InjectRepository(UserOrganization)
+    private readonly userOrganizationRepository: Repository<UserOrganization>,
     private readonly configService: ConfigService,
   ) {}
 
@@ -299,5 +305,68 @@ export class UsersService {
     }
 
     return user;
+  }
+
+  /**
+   * Art. 17 DSGVO erasure by anonymization: every personal identifier is
+   * destroyed, the row (and its opaque UUID) stays so GoBD-protected fiscal
+   * records (orders/payments referencing processedByUserId) remain intact.
+   * Idempotent. Never log the original email/name — that would recreate the
+   * PII we just erased.
+   */
+  async anonymizeUser(userId: string): Promise<User> {
+    const user = await this.userRepository.findOneOrFail({ where: { id: userId } });
+
+    user.firstName = 'Gelöschter';
+    user.lastName = 'Nutzer';
+    user.email = `deleted-${user.id}@anonymized.invalid`;
+    user.avatarUrl = null;
+    user.passwordHash = null;
+    user.isActive = false;
+    user.emailVerifiedAt = null;
+    user.failedLoginAttempts = 0;
+    user.lockedUntil = null;
+    user.passwordResetToken = null;
+    user.passwordResetExpiresAt = null;
+    user.emailVerificationToken = null;
+    user.emailVerificationExpiresAt = null;
+    user.twoFactorEnabled = false;
+    user.twoFactorMethod = null;
+    user.twoFactorSecretEncrypted = null;
+    user.twoFactorBackupCodesHash = null;
+    user.ssoProvider = null;
+    user.ssoSubject = null;
+    user.pendingEmail = null;
+    user.pendingEmailToken = null;
+    user.pendingEmailExpiresAt = null;
+    user.preferences = {} as UserPreferences;
+
+    await this.userRepository.save(user);
+    await this.revokeAllOtherSessions(userId); // no currentTokenId → revokes all
+    this.logger.log(`User anonymized: ${userId}`);
+    return user;
+  }
+
+  /**
+   * Guard for self-deletion: the sole ADMIN of an organization must promote
+   * another member (or delete the org) first — an org without any admin is
+   * unmanageable.
+   */
+  async assertNotLastOrgAdmin(userId: string): Promise<void> {
+    const adminMemberships = await this.userOrganizationRepository.find({
+      where: { userId, role: OrganizationRole.ADMIN },
+      relations: ['organization'],
+    });
+    for (const membership of adminMemberships) {
+      const otherAdmins = await this.userOrganizationRepository.count({
+        where: { organizationId: membership.organizationId, role: OrganizationRole.ADMIN },
+      });
+      if (otherAdmins <= 1) {
+        throw new BadRequestException({
+          code: ErrorCodes.VALIDATION_ERROR,
+          message: `Du bist der letzte Administrator der Organisation "${membership.organization?.name}". Ernenne zuerst einen weiteren Administrator oder lösche die Organisation.`,
+        });
+      }
+    }
   }
 }
