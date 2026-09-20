@@ -156,9 +156,11 @@ export class EventsShopPublicController {
       cancellation: orgLegal?.cancellation?.slice(0, 50000) || null,
     };
     // USt-Befreiung der Organisation (Kleinunternehmer § 19 UStG/Vereine) —
-    // der Shop braucht sie fuer die Preisnote. Default wie vorher: nicht
-    // befreit, es sei denn ausdruecklich `vatExempt: true`.
-    const vatExempt = organization?.settings?.vatExempt === true;
+    // der Shop braucht sie fuer die Preisnote. Default wie in taxRatesFor:
+    // befreit, solange nicht ausdruecklich `vatExempt: false`. Ein unbelegter
+    // Standard bietet einer Organisation sonst Steuersaetze an, die der Shop
+    // als "inkl. MwSt." ausweist (vgl. taxRatesFor: unbefreit nur bei false).
+    const vatExempt = organization?.settings?.vatExempt !== false;
     const openingHours = event.settings?.shop?.openingHours ?? null;
     const hoursMode = resolveShopHoursMode(event.settings?.shop?.hoursMode, openingHours);
     const windows = resolveShopWindows(event, timezone);

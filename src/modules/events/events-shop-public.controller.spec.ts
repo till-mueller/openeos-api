@@ -113,6 +113,17 @@ describe('EventsShopPublicController (legal texts)', () => {
     });
   });
 
+  it('defaults vatExempt to true when unset (mirrors taxRatesFor default-exempt)', async () => {
+    organizationRepository.findOne.mockResolvedValue({
+      id: 'org-1',
+      settings: { currency: 'EUR' },
+    });
+
+    const result = await controller.getShop('event-1');
+
+    expect(result.data.vatExempt).toBe(true);
+  });
+
   it('keeps existing public payload fields (event, currency, shop)', async () => {
     organizationRepository.findOne.mockResolvedValue({
       id: 'org-1',
