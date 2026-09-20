@@ -19,6 +19,7 @@ import {
 import {
   Order,
   OrderItem,
+  OrderAuditLog,
   Product,
   User,
   UserOrganization,
@@ -101,6 +102,8 @@ export class OrdersService {
     private readonly gatewayService: GatewayService,
     private readonly configService: ConfigService,
     private readonly tseService: TseService,
+    @InjectRepository(OrderAuditLog)
+    private readonly orderAuditLogRepository: Repository<OrderAuditLog>,
   ) {}
 
   async create(

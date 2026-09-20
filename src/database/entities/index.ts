@@ -21,6 +21,7 @@ export * from './order.entity';
 export * from './order-item.entity';
 export * from './payment.entity';
 export * from './order-item-payment.entity';
+export * from './order-audit-log.entity';
 
 // Discounts
 export * from './discount-voucher.entity';

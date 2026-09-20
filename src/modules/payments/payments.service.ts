@@ -12,6 +12,7 @@ import {
   Order,
   OrderItem,
   OrderItemPayment,
+  OrderAuditLog,
   User,
   UserOrganization,
   Organization,
@@ -60,6 +61,8 @@ export class PaymentsService {
     private readonly tseService: TseService,
     private readonly receiptPdfService: ReceiptPdfService,
     private readonly emailService: EmailService,
+    @InjectRepository(OrderAuditLog)
+    private readonly orderAuditLogRepository: Repository<OrderAuditLog>,
   ) {}
 
   /**

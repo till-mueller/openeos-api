@@ -9,6 +9,7 @@ import {
   Order,
   OrderItem,
   OrderItemPayment,
+  OrderAuditLog,
   UserOrganization,
   Organization,
 } from '../../database/entities';
@@ -22,6 +23,7 @@ import { TseModule } from '../tse/tse.module';
       Order,
       OrderItem,
       OrderItemPayment,
+      OrderAuditLog,
       UserOrganization,
       Organization,
     ]),

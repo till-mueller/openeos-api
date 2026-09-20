@@ -5,6 +5,7 @@ import { OrdersService } from './orders.service';
 import {
   Order,
   OrderItem,
+  OrderAuditLog,
   Product,
   UserOrganization,
   StockMovement,
@@ -22,6 +23,7 @@ import { TseModule } from '../tse/tse.module';
     TypeOrmModule.forFeature([
       Order,
       OrderItem,
+      OrderAuditLog,
       Product,
       UserOrganization,
       StockMovement,
