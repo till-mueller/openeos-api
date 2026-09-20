@@ -344,6 +344,18 @@ export class EmailService {
 
   // ============ Organization Invitation Email Templates ============
 
+  /** Sent BEFORE anonymization, while the address still exists. Goes through
+   *  sendEmail so a disabled transporter (email.enabled=false) degrades to the
+   *  DEV log instead of crashing the self-service deletion. */
+  async sendAccountDeletionConfirmation(to: string): Promise<void> {
+    await this.sendEmail({
+      to,
+      subject: 'Dein OpenEOS-Konto wurde gelöscht',
+      html: '<p>Dein Konto wurde auf deine Anfrage hin gelöscht und deine personenbezogenen Daten wurden anonymisiert. Steuerlich relevante Belege bleiben ohne Personenbezug gespeichert (gesetzliche Aufbewahrungspflichten).</p>',
+      text: 'Dein Konto wurde auf deine Anfrage hin gelöscht und deine personenbezogenen Daten wurden anonymisiert. Steuerlich relevante Belege bleiben ohne Personenbezug gespeichert (gesetzliche Aufbewahrungspflichten).',
+    });
+  }
+
   async sendInvitationEmail(
     email: string,
     organizationName: string,

@@ -6,6 +6,7 @@ import {
   Delete,
   Body,
   Param,
+  Res,
   HttpCode,
   HttpStatus,
   UseInterceptors,
@@ -15,6 +16,7 @@ import {
   FileTypeValidator,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 import {
   ApiTags,
   ApiOperation,
@@ -29,6 +31,7 @@ import {
   UpdatePreferencesDto,
   RequestEmailChangeDto,
   VerifyEmailChangeDto,
+  DeleteAccountDto,
 } from './dto';
 import { CurrentUser } from '../../common/decorators';
 import { User } from '../../database/entities';
@@ -220,6 +223,25 @@ export class UsersController {
   async revokeAllOtherSessions(@CurrentUser() user: User) {
     const count = await this.usersService.revokeAllOtherSessions(user.id);
     return { message: `${count} Session(s) wurden beendet` };
+  }
+
+  @Get('me/data-export')
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'Export my data (DSGVO Art. 15)' })
+  async exportMyData(@CurrentUser() user: User, @Res({ passthrough: true }) res: Response) {
+    const data = await this.usersService.getDataExport(user.id);
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="openeos-data-export-${user.id}.json"`);
+    return data;
+  }
+
+  @Delete('me')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'Delete my account (DSGVO Art. 17, anonymizes)' })
+  async deleteMyAccount(@CurrentUser() user: User, @Body() dto: DeleteAccountDto) {
+    await this.usersService.deleteAccount(user.id, dto.password);
+    return { data: { deleted: true } };
   }
 
   private sanitizeUser(user: User): Partial<User> {

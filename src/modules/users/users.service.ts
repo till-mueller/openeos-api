@@ -2,6 +2,7 @@ import {
   Injectable,
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   NotFoundException,
   Logger,
 } from '@nestjs/common';
@@ -16,6 +17,7 @@ import {
   OrganizationRole,
 } from '../../database/entities/user-organization.entity';
 import { ErrorCodes } from '../../common/constants/error-codes';
+import { EmailService } from '../email/email.service';
 import { UpdateProfileDto, UpdatePreferencesDto, RequestEmailChangeDto } from './dto';
 
 const EMAIL_CHANGE_EXPIRY_HOURS = 24;
@@ -32,6 +34,7 @@ export class UsersService {
     @InjectRepository(UserOrganization)
     private readonly userOrganizationRepository: Repository<UserOrganization>,
     private readonly configService: ConfigService,
+    private readonly emailService: EmailService,
   ) {}
 
   /**
@@ -368,5 +371,72 @@ export class UsersService {
         });
       }
     }
+  }
+
+  /**
+   * Art. 15 DSGVO export of the platform account's own data. Event/order
+   * data is org-scoped (the organization is its controller) and deliberately
+   * not part of this export.
+   */
+  async getDataExport(userId: string) {
+    const user = await this.getUserById(userId);
+    const sessions = await this.getSessions(userId);
+    return {
+      exportedAt: new Date().toISOString(),
+      profile: {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        avatarUrl: user.avatarUrl,
+        createdAt: user.createdAt,
+        lastLoginAt: user.lastLoginAt,
+        preferences: user.preferences,
+      },
+      memberships: (user.userOrganizations ?? []).map((m) => ({
+        organizationId: m.organizationId,
+        organizationName: m.organization?.name,
+        role: m.role,
+      })),
+      activeSessions: sessions.map((s) => ({
+        id: s.id,
+        createdAt: s.createdAt,
+        expiresAt: s.expiresAt,
+      })),
+    };
+  }
+
+  /**
+   * Art. 17 DSGVO self-service deletion: verifies credentials, blocks
+   * super-admins and sole org admins, mails the confirmation while the
+   * address still exists, then anonymizes.
+   */
+  async deleteAccount(userId: string, password?: string): Promise<void> {
+    const user = await this.userRepository.findOneOrFail({ where: { id: userId } });
+    if (user.isSuperAdmin) {
+      throw new ForbiddenException({
+        code: ErrorCodes.FORBIDDEN,
+        message: 'Super-Admin-Konten können nicht gelöscht werden',
+      });
+    }
+    if (user.passwordHash) {
+      if (!password) {
+        throw new BadRequestException({
+          code: ErrorCodes.VALIDATION_ERROR,
+          message: 'Passwort erforderlich',
+        });
+      }
+      const valid = await bcrypt.compare(password, user.passwordHash);
+      if (!valid) {
+        throw new ForbiddenException({
+          code: ErrorCodes.FORBIDDEN,
+          message: 'Passwort ist falsch',
+        });
+      }
+    }
+    await this.assertNotLastOrgAdmin(userId);
+    const email = user.email;
+    await this.emailService.sendAccountDeletionConfirmation(email);
+    await this.anonymizeUser(userId);
   }
 }
