@@ -80,6 +80,7 @@ export class DevicesService {
       skip,
       take: limit,
       order: { name: 'ASC' },
+      relations: ['activeUser'],
       select: {
         id: true,
         organizationId: true,
@@ -94,6 +95,9 @@ export class DevicesService {
         verifiedById: true,
         userAgent: true,
         settings: true,
+        activeUserId: true,
+        activeUserSince: true,
+        activeUser: { id: true, firstName: true, lastName: true },
         createdAt: true,
         updatedAt: true,
       },
@@ -107,6 +111,7 @@ export class DevicesService {
 
     const device = await this.deviceRepository.findOne({
       where: { id: deviceId, organizationId },
+      relations: ['activeUser'],
     });
 
     if (!device) {
@@ -704,6 +709,7 @@ export class DevicesService {
 
   async verifyPin(
     organizationId: string,
+    deviceId: string,
     pin: string,
   ): Promise<{ userId: string; firstName: string; lastName: string; role: string }> {
     const members = await this.userOrganizationRepository.find({
@@ -715,6 +721,13 @@ export class DevicesService {
       if (!member.pin) continue;
       const isMatch = await bcrypt.compare(pin, member.pin);
       if (isMatch) {
+        // Couple this device to the verified server so admins can see who's
+        // on it, and so it can be handed off to a replacement till later.
+        await this.deviceRepository.update(
+          { id: deviceId },
+          { activeUserId: member.userId, activeUserSince: new Date() },
+        );
+
         return {
           userId: member.userId,
           firstName: member.user.firstName,
@@ -728,6 +741,37 @@ export class DevicesService {
       code: ErrorCodes.VALIDATION_ERROR,
       message: 'Ungültige PIN',
     });
+  }
+
+  /**
+   * Decouple whichever server is PIN-coupled to a device -- on shift end, or
+   * on an admin-forced handoff when the till itself has an issue and the
+   * server needs to couple to a replacement instead.
+   */
+  async clearActiveUser(deviceId: string): Promise<void> {
+    await this.deviceRepository.update(
+      { id: deviceId },
+      { activeUserId: null, activeUserSince: null },
+    );
+  }
+
+  /**
+   * Admin-forced version of clearActiveUser -- e.g. a till died mid-shift and
+   * the server needs to couple to a replacement, but never hit the normal
+   * "end shift" button on the dead device.
+   */
+  async clearActiveUserAsAdmin(
+    organizationId: string,
+    deviceId: string,
+    user: User,
+  ): Promise<Device> {
+    await this.checkPermission(organizationId, user.id, 'devices');
+    const device = await this.findOne(organizationId, deviceId, user);
+    await this.clearActiveUser(deviceId);
+    device.activeUserId = null;
+    device.activeUserSince = null;
+    device.activeUser = null;
+    return device;
   }
 
   private async checkMembership(organizationId: string, userId: string): Promise<void> {

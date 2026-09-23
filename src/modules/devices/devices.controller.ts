@@ -125,6 +125,16 @@ export class DevicesController {
     return this.devicesService.getDeviceStats(organizationId, deviceId, user);
   }
 
+  @Post(':deviceId/clear-active-user')
+  @HttpCode(HttpStatus.OK)
+  clearActiveUser(
+    @Param('organizationId', ParseUUIDPipe) organizationId: string,
+    @Param('deviceId', ParseUUIDPipe) deviceId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.devicesService.clearActiveUserAsAdmin(organizationId, deviceId, user);
+  }
+
   @Get('online/ids')
   async getOnlineDeviceIds(
     @Param('organizationId', ParseUUIDPipe) organizationId: string,

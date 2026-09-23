@@ -96,6 +96,18 @@ export class Device extends BaseEntity {
   @Column({ type: 'jsonb', default: {} })
   settings: DeviceSettings;
 
+  /**
+   * The org member currently PIN-coupled to this till (device-api verify-pin),
+   * so admins can see who's actually standing at a device and, if it dies,
+   * couple them to a replacement without losing their open orders (which key
+   * off createdByUserId, not the device).
+   */
+  @Column({ name: 'active_user_id', type: 'uuid', nullable: true })
+  activeUserId: string | null;
+
+  @Column({ name: 'active_user_since', type: 'timestamp with time zone', nullable: true })
+  activeUserSince: Date | null;
+
   // Relations
   @ManyToOne(() => Organization, (org) => org.devices, { onDelete: 'CASCADE', nullable: true })
   @JoinColumn({ name: 'organization_id' })
@@ -104,6 +116,10 @@ export class Device extends BaseEntity {
   @ManyToOne(() => User, { nullable: true })
   @JoinColumn({ name: 'verified_by_id' })
   verifiedBy: User | null;
+
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: 'active_user_id' })
+  activeUser: User | null;
 
   @OneToMany(() => Order, (order) => order.createdByDevice)
   createdOrders: Order[];

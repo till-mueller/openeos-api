@@ -373,9 +373,20 @@ export class DeviceApiController {
     const organizationId = requireOrganization(device);
     const result = await this.devicesService.verifyPin(
       organizationId,
+      device.id,
       verifyPinDto.pin,
     );
     return { data: result };
+  }
+
+  @Post('logout-server')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Decouple the PIN-verified server from this device (end of shift)',
+  })
+  async logoutServer(@CurrentDevice() device: Device) {
+    await this.devicesService.clearActiveUser(device.id);
+    return { data: { success: true } };
   }
 
   /**
